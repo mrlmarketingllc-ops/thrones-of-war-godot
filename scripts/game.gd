@@ -47,9 +47,10 @@ var all_units     : Array = []
 var all_buildings : Array = []
 var selected      : Array = []
 
-var player_gold       : int = 150
-var player_supply     : int = 0
-var player_max_supply : int = 0
+var player_faction    : String   = "north"   # change here to play a different faction
+var player_gold       : int      = 150
+var player_supply     : int      = 0
+var player_max_supply : int      = 0
 var main_building     : Building = null
 
 var drag_start := Vector2.ZERO
@@ -170,12 +171,21 @@ func _get_hint_text() -> String:
 	var sel_units := _get_selected_units()
 
 	if not sel_bldgs.is_empty():
-		var b := sel_bldgs[0] as Building
+		var b     := sel_bldgs[0] as Building
+		var bdata : Dictionary = Data.BUILDINGS.get(b.building_id, {})
+		var bname : String     = bdata.get("name", b.building_id)
+		var trains : Array     = bdata.get("trains", [])
 		if b.production_queue.is_empty():
-			return "Great Hall selected   [T] Train Worker  (50 gold)"
+			if trains.is_empty():
+				return "%s selected — nothing to train" % bname
+			var uid   : String     = trains[0]
+			var udata : Dictionary = Data.UNITS.get(uid, {})
+			var uname : String     = udata.get("name", uid)
+			var ucost : int        = udata.get("gold_cost", 0)
+			return "%s selected   [T] Train %s  (%d gold)" % [bname, uname, ucost]
 		else:
 			var pct := int(b.get_progress() * 100.0)
-			return "Training Worker: %d%%   queue: %d / 5" % [pct, b.production_queue.size()]
+			return "Training: %d%%   queue: %d / 5" % [pct, b.production_queue.size()]
 
 	if not sel_units.is_empty():
 		var workers := sel_units.filter(func(e): return (e as Unit).unit_type == Unit.UnitType.WORKER)
@@ -189,14 +199,17 @@ func _get_hint_text() -> String:
 # Spawn helpers
 # ════════════════════════════════════════════════════════════════════════════
 func _spawn_starting_buildings() -> void:
+	var fdata   : Dictionary = Data.FACTIONS.get(player_faction, {})
+	var bldg_id : String     = fdata.get("main_building", "great_hall")
 	var b = BuildingScene.instantiate()
-	b.owner_id = "player1"
-	b.position = PLAYER_START + Vector3(-4.0, 0.0, -4.0)
+	b.building_id = bldg_id
+	b.owner_id    = "player1"
+	b.position    = PLAYER_START + Vector3(-4.0, 0.0, -4.0)
 	b.production_complete.connect(_on_production_complete)
-	add_child(b)
+	add_child(b)   # _ready() fires here, loading supply_provided from Data
 	all_buildings.append(b)
-	main_building        = b
-	player_max_supply   += b.supply_provided
+	main_building       = b
+	player_max_supply  += b.supply_provided
 
 func _spawn_resource_nodes() -> void:
 	var node_positions : Array[Vector3] = [
@@ -212,25 +225,26 @@ func _spawn_resource_nodes() -> void:
 		add_child(rn)
 
 func _spawn_starting_units() -> void:
-	# Three workers near the main building
+	var fdata      : Dictionary = Data.FACTIONS.get(player_faction, {})
+	var worker_id  : String     = fdata.get("worker",       "smallfolk")
+	var starter_id : String     = fdata.get("starter_unit", "levy_spearman")
+
 	var worker_offsets : Array[Vector3] = [
 		Vector3( 3.0, 0.0,  0.0),
 		Vector3(-3.0, 0.0,  0.0),
 		Vector3( 0.0, 0.0,  3.0),
 	]
 	for offset in worker_offsets:
-		_spawn_unit(PLAYER_START + offset, Color(0.80, 0.65, 0.40), Unit.UnitType.WORKER)
+		_spawn_unit(PLAYER_START + offset, worker_id)
 
-	# One soldier to test combat selection
-	_spawn_unit(PLAYER_START + Vector3(0.0, 0.0, -5.0), Color(0.35, 0.60, 1.0), Unit.UnitType.SOLDIER)
+	_spawn_unit(PLAYER_START + Vector3(0.0, 0.0, -5.0), starter_id)
 
-func _spawn_unit(pos: Vector3, color: Color, type: Unit.UnitType) -> void:
+func _spawn_unit(pos: Vector3, uid: String) -> void:
 	var u = UnitScene.instantiate()
-	u.unit_color = color
-	u.unit_type  = type
-	u.position   = pos
+	u.unit_id  = uid
+	u.position = pos
 	u.deposited_gold.connect(_on_gold_deposited)
-	add_child(u)
+	add_child(u)   # _ready() fires here, loading all stats from Data
 	all_units.append(u)
 	player_supply += u.supply_cost
 
@@ -240,10 +254,8 @@ func _spawn_unit(pos: Vector3, color: Color, type: Unit.UnitType) -> void:
 func _on_gold_deposited(amount: int) -> void:
 	player_gold += amount
 
-func _on_production_complete(unit_type: String, spawn_pos: Vector3) -> void:
-	var color : Color         = Color(0.80, 0.65, 0.40) if unit_type == "worker" else Color(0.35, 0.60, 1.0)
-	var type  : Unit.UnitType = Unit.UnitType.WORKER if unit_type == "worker" else Unit.UnitType.SOLDIER
-	_spawn_unit(spawn_pos, color, type)
+func _on_production_complete(unit_id: String, spawn_pos: Vector3) -> void:
+	_spawn_unit(spawn_pos, unit_id)
 
 # ════════════════════════════════════════════════════════════════════════════
 # Input registration
@@ -355,7 +367,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_ESCAPE:
 				_deselect_all()
 			KEY_T:
-				_try_train_worker()
+				_try_train()
 
 # ════════════════════════════════════════════════════════════════════════════
 # Selection
@@ -424,11 +436,19 @@ func _right_click(screen_pos: Vector2) -> void:
 	for i in count:
 		(units[i] as Unit).move_to(world_pos + _formation_offset(i, count))
 
-func _try_train_worker() -> void:
-	for b in _get_selected_buildings():
-		if player_gold >= 50:
-			if (b as Building).enqueue("worker"):
-				player_gold -= 50
+func _try_train() -> void:
+	for b_node in _get_selected_buildings():
+		var building   := b_node as Building
+		var bdata      : Dictionary = Data.BUILDINGS.get(building.building_id, {})
+		var trains     : Array      = bdata.get("trains", [])
+		if trains.is_empty():
+			continue
+		var unit_id    : String     = trains[0]   # train first unit in list; Phase 9 adds UI buttons
+		var udata      : Dictionary = Data.UNITS.get(unit_id, {})
+		var cost       : int        = udata.get("gold_cost", 50)
+		if player_gold >= cost:
+			if building.enqueue(unit_id):
+				player_gold -= cost
 
 # ════════════════════════════════════════════════════════════════════════════
 # Raycasting helpers
