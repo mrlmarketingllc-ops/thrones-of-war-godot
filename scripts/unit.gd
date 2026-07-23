@@ -27,8 +27,9 @@ var visual_scale    : float    = 1.0
 var is_selected := false
 
 # ── Movement ──────────────────────────────────────────────────────────────────
-var _target_pos := Vector3.ZERO
-var _has_target := false
+var _target_pos  := Vector3.ZERO
+var _has_target  := false
+var _nav_enabled := false   # true when _set_target() queued a nav-mesh path
 
 # ── State machine ─────────────────────────────────────────────────────────────
 var state          : UnitState  = UnitState.IDLE
@@ -43,6 +44,7 @@ var attack_timer   : float        = 0.0
 var _ring       : MeshInstance3D
 var _hp_bar_fg  : MeshInstance3D
 var _hp_bar_mat : StandardMaterial3D
+var _nav_agent  : NavigationAgent3D
 const _BAR_W    : float = 0.8
 const _BAR_H    : float = 0.07
 
@@ -72,6 +74,12 @@ func _ready() -> void:
 
 	_target_pos = global_position
 	_build_visuals()
+
+	_nav_agent = NavigationAgent3D.new()
+	_nav_agent.path_desired_distance   = 0.5
+	_nav_agent.target_desired_distance = 0.5
+	_nav_agent.max_speed               = speed
+	add_child(_nav_agent)
 
 # ── Visual construction ───────────────────────────────────────────────────────
 
@@ -176,26 +184,40 @@ func _physics_process(delta: float) -> void:
 		if not _has_target:
 			_on_arrived()
 
-func _apply_movement(delta: float) -> void:
+func _apply_movement(_delta: float) -> void:
 	if not _has_target:
 		velocity.x = 0.0
 		velocity.z = 0.0
 		move_and_slide()
 		return
-	var to_target := _target_pos - global_position
-	to_target.y   = 0.0
-	if to_target.length() > 0.15:
-		var move := to_target.normalized() * speed
+
+	# Nav-mesh path (move_to / gather / return).  Direct movement for chasing.
+	var next_pos : Vector3 = _target_pos
+	if _nav_agent != null and _nav_enabled:
+		if _nav_agent.is_navigation_finished():
+			velocity.x   = 0.0
+			velocity.z   = 0.0
+			_has_target  = false
+			_nav_enabled = false
+			move_and_slide()
+			return
+		next_pos = _nav_agent.get_next_path_position()
+
+	var to_next := next_pos - global_position
+	to_next.y   = 0.0
+	if to_next.length() > 0.2:
+		var move := to_next.normalized() * speed
 		velocity.x = move.x
 		velocity.z = move.z
-		var look_pos := global_position + Vector3(to_target.x, 0.0, to_target.z).normalized()
-		look_at(look_pos, Vector3.UP)
+		var look_dir := Vector3(to_next.x, 0.0, to_next.z).normalized()
+		if look_dir.length_squared() > 0.01:
+			look_at(global_position + look_dir, Vector3.UP)
 	else:
-		global_position.x = _target_pos.x
-		global_position.z = _target_pos.z
-		velocity.x  = 0.0
-		velocity.z  = 0.0
-		_has_target = false
+		velocity.x = 0.0
+		velocity.z = 0.0
+		if not _nav_enabled:
+			# Direct movement (chase) — arrived when within 0.2 of target
+			_has_target = false
 	move_and_slide()
 
 func _on_arrived() -> void:
@@ -237,9 +259,10 @@ func _chase_target(delta: float) -> void:
 		velocity.z   = 0.0
 		move_and_slide()
 	else:
-		# Update target position each frame so we chase moving enemies
-		_target_pos = Vector3(attack_target.global_position.x, global_position.y, attack_target.global_position.z)
-		_has_target = true
+		# Update target position each frame — direct chase, skip nav path
+		_target_pos  = Vector3(attack_target.global_position.x, global_position.y, attack_target.global_position.z)
+		_nav_enabled = false
+		_has_target  = true
 		_apply_movement(delta)
 
 func _do_attacking(delta: float) -> void:
@@ -328,5 +351,8 @@ func take_damage(amount: int) -> void:
 		queue_free()
 
 func _set_target(pos: Vector3) -> void:
-	_target_pos = Vector3(pos.x, global_position.y, pos.z)
-	_has_target = true
+	_target_pos  = Vector3(pos.x, global_position.y, pos.z)
+	_has_target  = true
+	_nav_enabled = true
+	if _nav_agent != null:
+		_nav_agent.target_position = pos
