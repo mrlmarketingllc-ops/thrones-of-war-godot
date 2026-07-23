@@ -131,9 +131,11 @@ var _minimap      : MinimapPanel
 var drag_start := Vector2.ZERO
 var dragging   := false
 
-var _build_menu : bool   = false   # worker build menu open
-var _build_bldg : String = ""      # building type chosen for placement
-var _ai_tick    : int    = 0
+var _build_menu  : bool   = false   # worker build menu open
+var _build_bldg  : String = ""      # building type chosen for placement
+var _ai_tick     : int    = 0
+var _wave_timer  : float  = 90.0   # seconds until next enemy wave
+var _spawn_timer : float  = 45.0   # seconds until next enemy reinforcement
 
 # ════════════════════════════════════════════════════════════════════════════
 # Lifecycle
@@ -156,6 +158,7 @@ func _build_scene() -> void:
 	_setup_lighting()
 	_setup_ground()
 	_setup_camera()
+	_spawn_terrain_features()
 
 func _setup_sky() -> void:
 	var sky_mat := ProceduralSkyMaterial.new()
@@ -215,6 +218,216 @@ func _setup_camera() -> void:
 	camera.position         = Vector3(0.0, 18.0, 14.0)
 	camera.rotation_degrees = Vector3(-55.0, 0.0, 0.0)
 	camera_rig.add_child(camera)
+
+# ════════════════════════════════════════════════════════════════════════════
+# Terrain features — visual only, no unit collision
+# ════════════════════════════════════════════════════════════════════════════
+func _spawn_terrain_features() -> void:
+	_spawn_river()
+	_spawn_hills()
+	_spawn_rocks()
+	_spawn_trees()
+
+func _spawn_river() -> void:
+	# A river running east–west at z ≈ 38, between the two bases
+	var water_mat := StandardMaterial3D.new()
+	water_mat.albedo_color = Color(0.12, 0.30, 0.52, 0.88)
+	water_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	water_mat.roughness    = 0.05
+	water_mat.metallic     = 0.40
+	water_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var water_plane := PlaneMesh.new()
+	water_plane.size     = Vector2(MAP_SIZE + 4.0, 8.0)
+	water_plane.material = water_mat
+	var water_vis := MeshInstance3D.new()
+	water_vis.name     = "RiverSurface"
+	water_vis.mesh     = water_plane
+	water_vis.position = Vector3(MAP_SIZE * 0.5, 0.03, 38.0)
+	add_child(water_vis)
+
+	# Muddy riverbanks — thin strips along each shore
+	for side in [-1.0, 1.0]:
+		var bank_mat := StandardMaterial3D.new()
+		bank_mat.albedo_color = Color(0.28, 0.21, 0.12)
+		bank_mat.roughness    = 1.0
+		var bank_plane := PlaneMesh.new()
+		bank_plane.size     = Vector2(MAP_SIZE + 4.0, 1.8)
+		bank_plane.material = bank_mat
+		var bank_vis := MeshInstance3D.new()
+		bank_vis.mesh     = bank_plane
+		bank_vis.position = Vector3(MAP_SIZE * 0.5, 0.02, 38.0 + side * 4.8)
+		add_child(bank_vis)
+
+func _spawn_hills() -> void:
+	# Pre-placed conical hills (CylinderMesh tapered to a peak)
+	# [center_x, center_z, base_radius, height]
+	var defs : Array = [
+		[25.0, 22.0, 9.0, 3.0],
+		[72.0, 20.0, 7.0, 2.5],
+		[20.0, 72.0, 8.0, 2.8],
+		[78.0, 72.0, 9.0, 3.5],
+		[30.0, 53.0, 6.0, 2.0],
+		[68.0, 47.0, 7.0, 2.2],
+		[50.0, 12.0, 6.0, 1.8],
+		[50.0, 88.0, 7.0, 2.5],
+	]
+	for raw in defs:
+		var cx    : float = raw[0]
+		var cz    : float = raw[1]
+		var brad  : float = raw[2]
+		var ht    : float = raw[3]
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.19, 0.34, 0.13).darkened(randf() * 0.22)
+		mat.roughness    = 1.0
+		var cone := CylinderMesh.new()
+		cone.top_radius    = brad * 0.18   # narrow peak
+		cone.bottom_radius = brad
+		cone.height        = ht
+		cone.material      = mat
+		var vis := MeshInstance3D.new()
+		vis.mesh     = cone
+		vis.position = Vector3(0.0, ht * 0.5 + 0.01, 0.0)
+		var node := Node3D.new()
+		node.position = Vector3(cx, 0.0, cz)
+		node.add_child(vis)
+		add_child(node)
+
+func _spawn_rocks() -> void:
+	var positions : Array[Vector2] = [
+		Vector2(42.0, 23.0), Vector2(60.0, 30.0),
+		Vector2(15.0, 57.0), Vector2(82.0, 48.0),
+		Vector2(55.0, 82.0), Vector2(27.0, 44.0),
+		Vector2(64.0, 85.0), Vector2(38.0, 64.0),
+	]
+	for rp in positions:
+		_place_rock_cluster(Vector3(rp.x, 0.01, rp.y))
+
+func _place_rock_cluster(center: Vector3) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(center.x * 137.0 + center.z * 31.0)
+	var cluster := Node3D.new()
+	cluster.position = center
+	for _i in rng.randi_range(3, 5):
+		var sz := Vector3(
+			rng.randf_range(0.35, 1.05),
+			rng.randf_range(0.28, 0.85),
+			rng.randf_range(0.35, 1.00)
+		)
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(
+			rng.randf_range(0.36, 0.52),
+			rng.randf_range(0.33, 0.45),
+			rng.randf_range(0.28, 0.40)
+		)
+		mat.roughness = 1.0
+		var box := BoxMesh.new()
+		box.size     = sz
+		box.material = mat
+		var rock := MeshInstance3D.new()
+		rock.mesh     = box
+		rock.position = Vector3(
+			rng.randf_range(-1.6, 1.6),
+			sz.y * 0.5,
+			rng.randf_range(-1.6, 1.6)
+		)
+		rock.rotation = Vector3(
+			rng.randf_range(-0.18, 0.18),
+			rng.randf_range(0.0, TAU),
+			rng.randf_range(-0.18, 0.18)
+		)
+		cluster.add_child(rock)
+	add_child(cluster)
+
+func _spawn_trees() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99887   # fixed seed → same forest every run
+
+	# Exclusion zone centres (units: world pos)
+	var excl : Array[Vector3] = [
+		PLAYER_START,
+		ENEMY_START,
+		PLAYER_START + Vector3(14.0, 0.0,  0.0),
+		PLAYER_START + Vector3( 0.0, 0.0, 14.0),
+		PLAYER_START + Vector3(14.0, 0.0, 14.0),
+		Vector3(50.0, 0.0, 44.0),
+		Vector3(50.0, 0.0, 56.0),
+	]
+
+	var placed : int = 0
+	var tries  : int = 0
+	while placed < 38 and tries < 800:
+		tries += 1
+		var x : float = rng.randf_range(4.0, 96.0)
+		var z : float = rng.randf_range(4.0, 96.0)
+		var pos := Vector3(x, 0.01, z)
+
+		# Reject if inside a base / resource zone
+		var ok : bool = true
+		for ep in excl:
+			if pos.distance_to(ep) < 13.0:
+				ok = false
+				break
+		# Reject if in the river band
+		if absf(z - 38.0) < 6.0:
+			ok = false
+		if not ok:
+			continue
+
+		_place_tree(pos, rng)
+		placed += 1
+
+func _place_tree(pos: Vector3, rng: RandomNumberGenerator) -> void:
+	var is_pine : bool  = rng.randf() > 0.38
+	var height  : float = rng.randf_range(1.8, 3.2)
+	var trunk_r : float = rng.randf_range(0.10, 0.18)
+	var crown_r : float = rng.randf_range(0.85, 1.55)
+
+	# Trunk
+	var trunk_mat := StandardMaterial3D.new()
+	trunk_mat.albedo_color = Color(
+		rng.randf_range(0.28, 0.40),
+		rng.randf_range(0.18, 0.26),
+		rng.randf_range(0.08, 0.14)
+	)
+	trunk_mat.roughness = 1.0
+	var trunk_h  : float = height * 0.42
+	var trunk_mesh := CylinderMesh.new()
+	trunk_mesh.top_radius    = trunk_r * 0.55
+	trunk_mesh.bottom_radius = trunk_r
+	trunk_mesh.height        = trunk_h
+	trunk_mesh.material      = trunk_mat
+	var trunk_vis := MeshInstance3D.new()
+	trunk_vis.mesh     = trunk_mesh
+	trunk_vis.position = Vector3(0.0, trunk_h * 0.5, 0.0)
+
+	# Crown
+	var g : float = rng.randf_range(0.30, 0.52)
+	var crown_mat := StandardMaterial3D.new()
+	crown_mat.albedo_color = Color(rng.randf_range(0.04, 0.14), g, rng.randf_range(0.04, 0.12))
+	crown_mat.roughness    = 1.0
+	var crown_vis := MeshInstance3D.new()
+	if is_pine:
+		var cone := CylinderMesh.new()
+		cone.top_radius    = 0.02
+		cone.bottom_radius = crown_r
+		cone.height        = height * 0.72
+		cone.material      = crown_mat
+		crown_vis.mesh     = cone
+		crown_vis.position = Vector3(0.0, trunk_h + height * 0.72 * 0.5, 0.0)
+	else:
+		var sphere := SphereMesh.new()
+		sphere.radius   = crown_r
+		sphere.height   = crown_r * 1.85
+		sphere.material = crown_mat
+		crown_vis.mesh     = sphere
+		crown_vis.position = Vector3(0.0, trunk_h + crown_r * 0.72, 0.0)
+
+	var tree := Node3D.new()
+	tree.position  = pos
+	tree.rotation.y = rng.randf() * TAU
+	tree.add_child(trunk_vis)
+	tree.add_child(crown_vis)
+	add_child(tree)
 
 # ════════════════════════════════════════════════════════════════════════════
 # UI overlay
@@ -388,6 +601,32 @@ func _spawn_enemy_unit(pos: Vector3, uid: String) -> void:
 	add_child(u)
 	all_units.append(u)
 
+func _launch_enemy_wave() -> void:
+	# All enemy units march toward the player's main building
+	var target : Vector3 = PLAYER_START
+	if main_building != null and is_instance_valid(main_building):
+		target = main_building.global_position
+	target.x += randf_range(-6.0, 6.0)
+	target.z += randf_range(-6.0, 6.0)
+	for u_node in all_units:
+		var u := u_node as Unit
+		if u.owner_id == "player2":
+			u.move_to(target)
+
+func _try_spawn_enemy() -> void:
+	var count : int = 0
+	for u_node in all_units:
+		if (u_node as Unit).owner_id == "player2":
+			count += 1
+	if count >= 12:
+		return
+	var pool : Array[String] = ["raider", "raider", "skinchanger_scout", "thenn_skirmisher", "raider"]
+	var uid  : String = pool[randi() % pool.size()]
+	_spawn_enemy_unit(
+		ENEMY_START + Vector3(randf_range(-7.0, 7.0), 0.0, randf_range(-7.0, 7.0)),
+		uid
+	)
+
 # ════════════════════════════════════════════════════════════════════════════
 # Economy signals
 # ════════════════════════════════════════════════════════════════════════════
@@ -528,6 +767,14 @@ func _process(delta: float) -> void:
 	if _ai_tick >= 30:
 		_ai_tick = 0
 		_update_enemy_ai()
+	_wave_timer -= delta
+	if _wave_timer <= 0.0:
+		_wave_timer = 90.0
+		_launch_enemy_wave()
+	_spawn_timer -= delta
+	if _spawn_timer <= 0.0:
+		_spawn_timer = 45.0
+		_try_spawn_enemy()
 	_update_hud()
 
 func _pan_camera(delta: float) -> void:
