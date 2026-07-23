@@ -19,6 +19,62 @@ class SelectionBox extends Control:
 		draw_rect(r, Color(0.05, 1.0, 0.3, 0.85), false, 1.5)
 
 # ════════════════════════════════════════════════════════════════════════════
+# Minimap panel (2D overlay, bottom-right corner)
+# ════════════════════════════════════════════════════════════════════════════
+class MinimapPanel extends Panel:
+	var game_ref : Node3D = null
+
+	func _process(_dt: float) -> void:
+		queue_redraw()
+
+	func _draw() -> void:
+		if game_ref == null:
+			return
+		const SZ : float = 160.0
+		var r := Rect2(Vector2.ZERO, Vector2(SZ, SZ))
+		draw_rect(r, Color(0.10, 0.18, 0.08))
+
+		# Resource nodes
+		for rn_node in game_ref.resource_nodes:
+			var rn  := rn_node as ResourceNode
+			var col : Color = Color(0.90, 0.78, 0.05) if not rn.is_depleted() else Color(0.20, 0.20, 0.10)
+			draw_circle(_w2m(rn.global_position), 2.5, col)
+
+		# Units (hide enemy dots when they're in fog)
+		for u_node in game_ref.all_units:
+			var u := u_node as Unit
+			if not u.visible and u.owner_id != "player1":
+				continue
+			var col : Color = Color(0.25, 0.55, 1.0) if u.owner_id == "player1" else Color(1.0, 0.22, 0.22)
+			draw_circle(_w2m(u.global_position), 2.5, col)
+
+		# Camera view indicator
+		if game_ref.camera_rig != null:
+			var cp := game_ref.camera_rig.global_position
+			var tl := _w2m(cp + Vector3(-25.0, 0.0, -18.0))
+			var br := _w2m(cp + Vector3( 25.0, 0.0,  18.0))
+			draw_rect(Rect2(tl, br - tl), Color(1.0, 1.0, 1.0, 0.50), false, 1.0)
+
+		draw_rect(r, Color(0.55, 0.55, 0.55), false, 1.5)
+
+	func _gui_input(event: InputEvent) -> void:
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+				const SZ : float = 160.0
+				var ms   : float = game_ref.MAP_SIZE
+				game_ref.camera_rig.position.x = clampf(mb.position.x / SZ * ms, 0.0, ms)
+				game_ref.camera_rig.position.z = clampf(mb.position.y / SZ * ms, 0.0, ms)
+
+	func _w2m(world_pos: Vector3) -> Vector2:
+		const SZ : float = 160.0
+		var ms   : float = game_ref.MAP_SIZE
+		return Vector2(
+			clampf(world_pos.x / ms * SZ, 0.0, SZ),
+			clampf(world_pos.z / ms * SZ, 0.0, SZ)
+		)
+
+# ════════════════════════════════════════════════════════════════════════════
 # Constants
 # ════════════════════════════════════════════════════════════════════════════
 const UnitScene         := preload("res://scenes/unit.tscn")
@@ -32,8 +88,12 @@ const CAM_ZOOM_MAX   : float = 42.0
 const DRAG_THRESHOLD : float = 5.0
 const EDGE_MARGIN    : int   = 20
 
-const PLAYER_START   := Vector3(18.0, 0.0, 18.0)  # camera + building anchor
-const ENEMY_START    := Vector3(75.0, 0.0, 75.0)  # enemy camp for Phase 5
+const PLAYER_START   := Vector3(18.0, 0.0, 18.0)
+const ENEMY_START    := Vector3(75.0, 0.0, 75.0)
+
+# Fog of war
+const FOG_SIZE   : int   = 25     # 25×25 pixel texture → 4 world-unit cells
+const VISION_R   : float = 14.0   # vision radius per player unit (world units)
 
 # ════════════════════════════════════════════════════════════════════════════
 # State
@@ -54,6 +114,16 @@ var player_supply     : int      = 0
 var player_max_supply : int      = 0
 var main_building     : Building = null
 
+var resource_nodes : Array = []
+
+# Fog of war
+var _fog_image    : Image
+var _fog_texture  : ImageTexture
+var _fog_explored : PackedByteArray   # 0 = never seen
+var _fog_state    : PackedByteArray   # 0 = black, 1 = gray shroud, 2 = visible
+var _fog_tick     : int = 0
+var _minimap      : MinimapPanel
+
 var drag_start := Vector2.ZERO
 var dragging   := false
 
@@ -63,6 +133,7 @@ var dragging   := false
 func _ready() -> void:
 	_register_input_actions()
 	_build_scene()
+	_setup_fog()
 	_setup_ui()
 	_spawn_starting_buildings()
 	_spawn_resource_nodes()
@@ -164,6 +235,16 @@ func _setup_ui() -> void:
 	hint_label.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
 	canvas.add_child(hint_label)
 
+	# Minimap — bottom-right corner, 160×160
+	_minimap          = MinimapPanel.new()
+	_minimap.name     = "Minimap"
+	_minimap.game_ref = self
+	_minimap.size     = Vector2(160.0, 160.0)
+	var vp_size := get_viewport().get_visible_rect().size
+	_minimap.position     = vp_size - Vector2(170.0, 170.0)
+	_minimap.mouse_filter = Control.MOUSE_FILTER_STOP
+	canvas.add_child(_minimap)
+
 func _update_hud() -> void:
 	hud_label.text = "Gold: %d   Supply: %d / %d" % [player_gold, player_supply, player_max_supply]
 	hint_label.text = _get_hint_text()
@@ -225,6 +306,7 @@ func _spawn_resource_nodes() -> void:
 		var rn = ResourceNodeScene.instantiate()
 		rn.position = pos
 		add_child(rn)
+		resource_nodes.append(rn)
 
 func _spawn_starting_units() -> void:
 	var fdata      : Dictionary = Data.FACTIONS.get(player_faction, {})
@@ -289,6 +371,98 @@ func _on_production_complete(unit_id: String, spawn_pos: Vector3) -> void:
 	_spawn_unit(spawn_pos, unit_id)
 
 # ════════════════════════════════════════════════════════════════════════════
+# Fog of war
+# ════════════════════════════════════════════════════════════════════════════
+func _setup_fog() -> void:
+	var cell_count : int = FOG_SIZE * FOG_SIZE
+	_fog_explored = PackedByteArray()
+	_fog_explored.resize(cell_count)
+	_fog_explored.fill(0)
+	_fog_state = PackedByteArray()
+	_fog_state.resize(cell_count)
+	_fog_state.fill(0)
+
+	_fog_image = Image.create(FOG_SIZE, FOG_SIZE, false, Image.FORMAT_RGBA8)
+	_fog_image.fill(Color(0.0, 0.0, 0.0, 1.0))
+	_fog_texture = ImageTexture.create_from_image(_fog_image)
+
+	var mat := StandardMaterial3D.new()
+	mat.transparency    = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode    = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.texture_filter  = BaseMaterial3D.TEXTURE_FILTER_NEAREST   # PS1 blocky cells
+	mat.albedo_texture  = _fog_texture
+	mat.render_priority = 1
+
+	var plane := PlaneMesh.new()
+	plane.size     = Vector2(MAP_SIZE, MAP_SIZE)
+	plane.material = mat
+
+	var fog_mesh      := MeshInstance3D.new()
+	fog_mesh.name      = "FogOfWar"
+	fog_mesh.mesh      = plane
+	fog_mesh.position  = Vector3(MAP_SIZE * 0.5, 0.05, MAP_SIZE * 0.5)
+	add_child(fog_mesh)
+
+func _update_fog() -> void:
+	# Collect player unit positions as Vector2(world_x, world_z)
+	var unit_xz : Array[Vector2] = []
+	for u_node in all_units:
+		var u := u_node as Unit
+		if u.owner_id == "player1":
+			unit_xz.append(Vector2(u.global_position.x, u.global_position.z))
+
+	var vis_r_sq  : float = VISION_R * VISION_R
+	var cell_w    : float = MAP_SIZE / float(FOG_SIZE)
+	var changed   : bool  = false
+
+	for py in FOG_SIZE:
+		var wz : float = (float(py) + 0.5) * cell_w
+		for px in FOG_SIZE:
+			var wx  : float = (float(px) + 0.5) * cell_w
+			var idx : int   = py * FOG_SIZE + px
+
+			var is_vis : bool = false
+			for upos in unit_xz:
+				var dx : float = upos.x - wx
+				var dz : float = upos.y - wz   # upos.y holds world Z
+				if dx * dx + dz * dz < vis_r_sq:
+					is_vis = true
+					break
+
+			var new_state : int
+			if is_vis:
+				new_state = 2
+				_fog_explored[idx] = 1
+			elif _fog_explored[idx] == 1:
+				new_state = 1
+			else:
+				new_state = 0
+
+			if new_state != int(_fog_state[idx]):
+				_fog_state[idx] = new_state
+				changed = true
+				match new_state:
+					2: _fog_image.set_pixel(px, py, Color(0.0, 0.0, 0.0, 0.00))
+					1: _fog_image.set_pixel(px, py, Color(0.0, 0.0, 0.0, 0.65))
+					_: _fog_image.set_pixel(px, py, Color(0.0, 0.0, 0.0, 1.00))
+
+	if changed:
+		_fog_texture.update(_fog_image)
+
+	# Hide enemy units that are outside any player unit's vision
+	for u_node in all_units:
+		var u := u_node as Unit
+		if u.owner_id == "player1":
+			continue
+		u.visible = _is_world_pos_visible(u.global_position)
+
+func _is_world_pos_visible(world_pos: Vector3) -> bool:
+	var cell_w : float = MAP_SIZE / float(FOG_SIZE)
+	var px     : int   = clamp(int(world_pos.x / cell_w), 0, FOG_SIZE - 1)
+	var py     : int   = clamp(int(world_pos.z / cell_w), 0, FOG_SIZE - 1)
+	return int(_fog_state[py * FOG_SIZE + px]) == 2
+
+# ════════════════════════════════════════════════════════════════════════════
 # Input registration
 # ════════════════════════════════════════════════════════════════════════════
 func _register_input_actions() -> void:
@@ -309,10 +483,14 @@ func _register_input_actions() -> void:
 # ════════════════════════════════════════════════════════════════════════════
 # Per-frame
 # ════════════════════════════════════════════════════════════════════════════
-func _process(_delta: float) -> void:
-	_pan_camera(_delta)
+func _process(delta: float) -> void:
+	_pan_camera(delta)
 	if not dragging:
-		_edge_scroll(_delta)
+		_edge_scroll(delta)
+	_fog_tick += 1
+	if _fog_tick >= 8:
+		_fog_tick = 0
+		_update_fog()
 	_update_hud()
 
 func _pan_camera(delta: float) -> void:
