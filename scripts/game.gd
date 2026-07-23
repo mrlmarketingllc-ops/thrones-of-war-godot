@@ -19,7 +19,7 @@ class SelectionBox extends Control:
 		draw_rect(r, Color(0.05, 1.0, 0.3, 0.85), false, 1.5)
 
 # ════════════════════════════════════════════════════════════════════════════
-# Minimap panel (2D overlay, bottom-right corner)
+# Minimap panel (2D overlay, bottom-left corner)
 # ════════════════════════════════════════════════════════════════════════════
 class MinimapPanel extends Panel:
 	var game_ref : Node3D = null
@@ -30,7 +30,7 @@ class MinimapPanel extends Panel:
 	func _draw() -> void:
 		if game_ref == null:
 			return
-		const SZ : float = 160.0
+		var SZ : float = size.x
 		var r := Rect2(Vector2.ZERO, Vector2(SZ, SZ))
 		draw_rect(r, Color(0.10, 0.18, 0.08))
 
@@ -61,8 +61,8 @@ class MinimapPanel extends Panel:
 		if event is InputEventMouseButton:
 			var mb := event as InputEventMouseButton
 			if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-				const SZ : float = 160.0
-				var ms   : float = game_ref.MAP_SIZE
+				var SZ : float = size.x
+				var ms : float = game_ref.MAP_SIZE
 				var cur_y : float = game_ref.camera_rig.position.y
 				game_ref.camera_rig.position = Vector3(
 					clampf(mb.position.x / SZ * ms, 0.0, ms),
@@ -71,8 +71,8 @@ class MinimapPanel extends Panel:
 				)
 
 	func _w2m(world_pos: Vector3) -> Vector2:
-		const SZ : float = 160.0
-		var ms   : float = game_ref.MAP_SIZE
+		var SZ : float = size.x
+		var ms : float = game_ref.MAP_SIZE
 		return Vector2(
 			clampf(world_pos.x / ms * SZ, 0.0, SZ),
 			clampf(world_pos.z / ms * SZ, 0.0, SZ)
@@ -141,6 +141,7 @@ var _spawn_timer : float  = 45.0   # seconds until next enemy reinforcement
 var ai_faction       : String   = "wildlings"
 var ai_gold          : int      = 150
 var ai_main_building : Building = null
+var _ai_attacking    : bool     = false
 
 # PvP networking
 var is_pvp          : bool                = false
@@ -195,19 +196,54 @@ func _setup_lighting() -> void:
 	add_child(sun)
 
 func _setup_ground() -> void:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.24, 0.40, 0.18)
-	mat.roughness    = 1.0
-	var plane := PlaneMesh.new()
-	plane.size     = Vector2(MAP_SIZE * 6.0, MAP_SIZE * 6.0)
-	plane.material = mat
-	var vis := MeshInstance3D.new()
-	vis.name     = "GroundMesh"
-	vis.mesh     = plane
-	vis.position = Vector3(MAP_SIZE * 0.5, 0.0, MAP_SIZE * 0.5)
-	add_child(vis)
+	# Outer area beyond map bounds — darker green
+	var outer_mat := StandardMaterial3D.new()
+	outer_mat.albedo_color = Color(0.11, 0.19, 0.07)
+	outer_mat.roughness    = 1.0
+	var outer_plane := PlaneMesh.new()
+	outer_plane.size     = Vector2(MAP_SIZE * 6.0, MAP_SIZE * 6.0)
+	outer_plane.material = outer_mat
+	var outer_vis := MeshInstance3D.new()
+	outer_vis.mesh     = outer_plane
+	outer_vis.position = Vector3(MAP_SIZE * 0.5, 0.0, MAP_SIZE * 0.5)
+	add_child(outer_vis)
 
-	# Collision on layer 1 (ground) for move raycasts
+	# Inner playable ground — bright green, raised 5mm to prevent z-fighting
+	var inner_mat := StandardMaterial3D.new()
+	inner_mat.albedo_color = Color(0.24, 0.40, 0.18)
+	inner_mat.roughness    = 1.0
+	var inner_plane := PlaneMesh.new()
+	inner_plane.size     = Vector2(MAP_SIZE, MAP_SIZE)
+	inner_plane.material = inner_mat
+	var inner_vis := MeshInstance3D.new()
+	inner_vis.name     = "GroundMesh"
+	inner_vis.mesh     = inner_plane
+	inner_vis.position = Vector3(MAP_SIZE * 0.5, 0.005, MAP_SIZE * 0.5)
+	add_child(inner_vis)
+
+	# Boundary walls — low stone perimeter marking the map edge
+	var wall_mat := StandardMaterial3D.new()
+	wall_mat.albedo_color = Color(0.30, 0.26, 0.20)
+	wall_mat.roughness    = 1.0
+	const WH : float = 1.2   # wall height
+	const WT : float = 1.5   # wall thickness
+	# [center_x, center_z, box_size_x, box_size_z]
+	var wall_defs : Array = [
+		[MAP_SIZE * 0.5,              -(WT * 0.5),             MAP_SIZE + WT * 2.0, WT      ],
+		[MAP_SIZE * 0.5,              MAP_SIZE + WT * 0.5,     MAP_SIZE + WT * 2.0, WT      ],
+		[-(WT * 0.5),                 MAP_SIZE * 0.5,          WT,                  MAP_SIZE],
+		[MAP_SIZE + WT * 0.5,         MAP_SIZE * 0.5,          WT,                  MAP_SIZE],
+	]
+	for wd in wall_defs:
+		var wm := BoxMesh.new()
+		wm.size     = Vector3(wd[2], WH, wd[3])
+		wm.material = wall_mat
+		var wv := MeshInstance3D.new()
+		wv.mesh     = wm
+		wv.position = Vector3(wd[0], 0.005 + WH * 0.5, wd[1])
+		add_child(wv)
+
+	# Ground collision on layer 1
 	var body := StaticBody3D.new()
 	body.name            = "Ground"
 	body.position        = Vector3(MAP_SIZE * 0.5, 0.0, MAP_SIZE * 0.5)
@@ -453,17 +489,22 @@ func _spawn_trees() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 99887   # fixed seed → same forest every run
 
-	# Exclusion zone centres (units: world pos)
+	# Exclusion zones around every base location and resource node
 	var excl : Array[Vector3] = [
 		PLAYER_START,
 		ENEMY_START,
 		PLAYER_START + Vector3(14.0, 0.0,  0.0),
 		PLAYER_START + Vector3( 0.0, 0.0, 14.0),
-		PLAYER_START + Vector3(14.0, 0.0, 14.0),
 		ENEMY_START  + Vector3(-14.0, 0.0,  0.0),
 		ENEMY_START  + Vector3(  0.0, 0.0,-14.0),
-		Vector3(100.0, 0.0,  80.0),
-		Vector3(100.0, 0.0, 120.0),
+		Vector3(165.0, 0.0,  35.0),    # top-right corner
+		Vector3( 35.0, 0.0, 165.0),    # bottom-left corner
+		Vector3( 55.0, 0.0,  75.0),    # bridge 1 north
+		Vector3( 50.0, 0.0, 125.0),    # bridge 1 south
+		Vector3(145.0, 0.0,  75.0),    # bridge 2 north
+		Vector3(150.0, 0.0, 125.0),    # bridge 2 south
+		Vector3(100.0, 0.0,  55.0),    # north-centre
+		Vector3(100.0, 0.0, 145.0),    # south-centre
 	]
 
 	var placed : int = 0
@@ -569,13 +610,13 @@ func _setup_ui() -> void:
 	hint_label.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
 	canvas.add_child(hint_label)
 
-	# Minimap — bottom-right corner, 160×160
+	# Minimap — bottom-left corner, 272×272
 	_minimap          = MinimapPanel.new()
 	_minimap.name     = "Minimap"
 	_minimap.game_ref = self
-	_minimap.size     = Vector2(160.0, 160.0)
+	_minimap.size     = Vector2(272.0, 272.0)
 	var vp_size := get_viewport().get_visible_rect().size
-	_minimap.position     = Vector2(10.0, vp_size.y - 170.0)
+	_minimap.position     = Vector2(10.0, vp_size.y - 282.0)
 	_minimap.mouse_filter = Control.MOUSE_FILTER_STOP
 	canvas.add_child(_minimap)
 
@@ -654,14 +695,22 @@ func _spawn_starting_buildings() -> void:
 	player_max_supply  += b.supply_provided
 
 func _spawn_resource_nodes() -> void:
+	# 14 nodes at 10 base-worthy locations spread across the map
 	var node_positions : Array[Vector3] = [
-		PLAYER_START + Vector3(14.0, 0.0,  0.0),    # near player — east
-		PLAYER_START + Vector3( 0.0, 0.0, 14.0),    # near player — south
-		PLAYER_START + Vector3(14.0, 0.0, 14.0),    # near player — southeast
-		ENEMY_START  + Vector3(-14.0, 0.0,  0.0),   # near enemy  — west
-		ENEMY_START  + Vector3(  0.0, 0.0,-14.0),   # near enemy  — north
-		Vector3(100.0, 0.0,  80.0),                  # contested mid-north
-		Vector3(100.0, 0.0, 120.0),                  # contested mid-south
+		PLAYER_START + Vector3(14.0, 0.0,  0.0),    # player home — east
+		PLAYER_START + Vector3( 0.0, 0.0, 14.0),    # player home — south
+		ENEMY_START  + Vector3(-14.0, 0.0,  0.0),   # enemy home  — west
+		ENEMY_START  + Vector3(  0.0, 0.0,-14.0),   # enemy home  — north
+		Vector3(160.0, 0.0,  30.0),                  # top-right corner
+		Vector3(170.0, 0.0,  48.0),
+		Vector3( 30.0, 0.0, 155.0),                  # bottom-left corner
+		Vector3( 48.0, 0.0, 170.0),
+		Vector3( 55.0, 0.0,  75.0),                  # bridge 1 — north
+		Vector3( 50.0, 0.0, 125.0),                  # bridge 1 — south
+		Vector3(145.0, 0.0,  75.0),                  # bridge 2 — north
+		Vector3(150.0, 0.0, 125.0),                  # bridge 2 — south
+		Vector3(100.0, 0.0,  55.0),                  # north-centre
+		Vector3(100.0, 0.0, 145.0),                  # south-centre
 	]
 	for pos in node_positions:
 		var rn = ResourceNodeScene.instantiate()
@@ -1250,7 +1299,7 @@ func _edge_scroll(delta: float) -> void:
 		_apply_cam_pan(move, delta)
 
 func _apply_cam_pan(move: Vector2, delta: float) -> void:
-	var dp := Vector3(move.x, 0.0, -move.y) * CAM_PAN_SPEED * delta
+	var dp := Vector3(move.x, 0.0, move.y) * CAM_PAN_SPEED * delta
 	camera_rig.position += dp
 	camera_rig.position.x = clampf(camera_rig.position.x, 0.0, MAP_SIZE)
 	camera_rig.position.z = clampf(camera_rig.position.z, 0.0, MAP_SIZE)
@@ -1498,17 +1547,45 @@ func _update_enemy_ai() -> void:
 			ai_workers.append(u)
 		else:
 			ai_military.append(u)
+	_ai_assign_workers(ai_workers)
+	_ai_do_production(ai_workers.size())
+	_ai_consider_expansion()
+	_ai_do_combat(ai_military)
 
-	# 1. Economy — send idle workers to nearest resource node
-	if ai_main_building != null and is_instance_valid(ai_main_building):
-		for w_node in ai_workers:
-			var w : Unit = w_node as Unit
-			if w.state == Unit.UnitState.IDLE:
-				var rn : ResourceNode = _nearest_resource_node(w.global_position)
-				if rn != null:
-					w.gather_from(rn, ai_main_building)
+# Workers spread across nodes instead of all clustering on nearest
+func _ai_assign_workers(workers: Array) -> void:
+	var node_usage : Dictionary = {}
+	for rn_node in resource_nodes:
+		node_usage[rn_node] = 0
+	for w_node in workers:
+		var w : Unit = w_node as Unit
+		if w.gather_target != null and is_instance_valid(w.gather_target) \
+				and not w.gather_target.is_depleted() and node_usage.has(w.gather_target):
+			node_usage[w.gather_target] = int(node_usage[w.gather_target]) + 1
+	for w_node in workers:
+		var w : Unit = w_node as Unit
+		if w.state != Unit.UnitState.IDLE:
+			continue
+		var dep : Building = _nearest_ai_deposit(w.global_position)
+		if dep == null:
+			continue
+		var best_rn    : ResourceNode = null
+		var best_score : float        = INF
+		for rn_node in resource_nodes:
+			var rn : ResourceNode = rn_node as ResourceNode
+			if rn.is_depleted():
+				continue
+			var usage : int   = int(node_usage.get(rn_node, 0))
+			var dist  : float = w.global_position.distance_to(rn.global_position)
+			var score : float = float(usage) * 50.0 + dist
+			if score < best_score:
+				best_score = score
+				best_rn    = rn
+		if best_rn != null:
+			node_usage[best_rn] = int(node_usage.get(best_rn, 0)) + 1
+			w.gather_from(best_rn, dep)
 
-	# 2. Production — spend ai_gold to queue units from each AI building
+func _ai_do_production(worker_count: int) -> void:
 	var fdata  : Dictionary = Data.FACTIONS.get(ai_faction, {})
 	var worker : String     = fdata.get("worker", "")
 	for b_node in all_buildings:
@@ -1522,7 +1599,7 @@ func _update_enemy_ai() -> void:
 		if trains.is_empty():
 			continue
 		var to_train : String = ""
-		if worker in trains and ai_workers.size() < 5:
+		if worker in trains and worker_count < 5:
 			to_train = worker
 		else:
 			for t : String in trains:
@@ -1539,27 +1616,102 @@ func _update_enemy_ai() -> void:
 			if b.enqueue(to_train):
 				ai_gold -= cost
 
-	# 3. Combat — aggro any player unit within 45 units
-	for u_node in ai_military:
-		var enemy : Unit = u_node as Unit
-		if (enemy.state == Unit.UnitState.ATTACK_MOVE or enemy.state == Unit.UnitState.ATTACKING) \
-				and enemy.attack_target != null and is_instance_valid(enemy.attack_target):
+# Build a second/third base at the nearest unclaimed resource location
+func _ai_consider_expansion() -> void:
+	if ai_gold < 350:
+		return
+	var base_count : int = 0
+	for b_node in all_buildings:
+		var b : Building = b_node as Building
+		if b.owner_id != "player2":
 			continue
-		var nearest : Unit = _nearest_player_unit(enemy.global_position, 45.0)
-		if nearest != null:
-			enemy.attack(nearest)
-
-func _nearest_resource_node(pos: Vector3) -> ResourceNode:
-	var best   : ResourceNode = null
-	var best_d : float        = INF
+		var bdata : Dictionary = Data.BUILDINGS.get(b.building_id, {})
+		if int(bdata.get("supply_provided", 0)) > 0:
+			base_count += 1
+	if base_count >= 3:
+		return
+	var fdata   : Dictionary = Data.FACTIONS.get(ai_faction, {})
+	var bldg_id : String     = fdata.get("main_building", "great_tent")
+	var bdata   : Dictionary = Data.BUILDINGS.get(bldg_id, {})
+	var cost    : int        = bdata.get("gold_cost", 200)
+	if ai_gold < cost + 150:
+		return
+	# Find nearest node that is new territory: >30 from any AI base, <120 away
+	var best_pos  : Vector3 = Vector3.INF
+	var best_dist : float   = INF
 	for rn_node in resource_nodes:
 		var rn : ResourceNode = rn_node as ResourceNode
 		if rn.is_depleted():
 			continue
-		var d : float = pos.distance_to(rn.global_position)
+		var rn_pos : Vector3 = rn.global_position
+		var d_ai   : float   = INF
+		for b_node in all_buildings:
+			var b : Building = b_node as Building
+			if b.owner_id != "player2":
+				continue
+			var bd2 : Dictionary = Data.BUILDINGS.get(b.building_id, {})
+			if int(bd2.get("supply_provided", 0)) <= 0:
+				continue
+			var d : float = rn_pos.distance_to(b.global_position)
+			if d < d_ai:
+				d_ai = d
+		if d_ai < 30.0 or d_ai > 120.0:
+			continue
+		if d_ai < best_dist:
+			best_dist = d_ai
+			best_pos  = rn_pos + Vector3(-5.0, 0.0, -5.0)
+	if best_pos == Vector3.INF:
+		return
+	ai_gold -= cost
+	_spawn_ai_building(best_pos, bldg_id)
+
+func _ai_do_combat(military: Array) -> void:
+	# Check if player is threatening any AI building
+	var threatened : bool = false
+	for b_node in all_buildings:
+		var b : Building = b_node as Building
+		if b.owner_id != "player2":
+			continue
+		for u_node in all_units:
+			var u : Unit = u_node as Unit
+			if u.owner_id != "player1":
+				continue
+			if u.global_position.distance_to(b.global_position) < 55.0:
+				threatened = true
+				break
+		if threatened:
+			break
+	# Aggro nearby player units — wider scan when defending
+	var aggro_r : float = 60.0 if threatened else 45.0
+	for u_node in military:
+		var enemy : Unit = u_node as Unit
+		if (enemy.state == Unit.UnitState.ATTACK_MOVE or enemy.state == Unit.UnitState.ATTACKING) \
+				and enemy.attack_target != null and is_instance_valid(enemy.attack_target):
+			continue
+		var target : Unit = _nearest_player_unit(enemy.global_position, aggro_r)
+		if target != null:
+			enemy.attack(target)
+	# Army-size triggered attack: don't wait for the wave timer
+	if not _ai_attacking and military.size() >= 5:
+		_ai_attacking = true
+		_launch_enemy_wave()
+	elif military.size() < 2:
+		_ai_attacking = false
+
+func _nearest_ai_deposit(pos: Vector3) -> Building:
+	var best   : Building = null
+	var best_d : float    = INF
+	for b_node in all_buildings:
+		var b : Building = b_node as Building
+		if b.owner_id != "player2":
+			continue
+		var bdata : Dictionary = Data.BUILDINGS.get(b.building_id, {})
+		if int(bdata.get("supply_provided", 0)) <= 0:
+			continue
+		var d : float = pos.distance_to(b.global_position)
 		if d < best_d:
 			best_d = d
-			best   = rn
+			best   = b
 	return best
 
 func _nearest_player_unit(pos: Vector3, radius: float) -> Unit:
