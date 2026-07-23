@@ -33,6 +33,7 @@ const DRAG_THRESHOLD : float = 5.0
 const EDGE_MARGIN    : int   = 20
 
 const PLAYER_START   := Vector3(18.0, 0.0, 18.0)  # camera + building anchor
+const ENEMY_START    := Vector3(75.0, 0.0, 75.0)  # enemy camp for Phase 5
 
 # ════════════════════════════════════════════════════════════════════════════
 # State
@@ -66,6 +67,7 @@ func _ready() -> void:
 	_spawn_starting_buildings()
 	_spawn_resource_nodes()
 	_spawn_starting_units()
+	_spawn_enemy_units()
 
 # ════════════════════════════════════════════════════════════════════════════
 # Scene construction
@@ -190,8 +192,8 @@ func _get_hint_text() -> String:
 	if not sel_units.is_empty():
 		var workers := sel_units.filter(func(e): return (e as Unit).unit_type == Unit.UnitType.WORKER)
 		if not workers.is_empty():
-			return "Worker selected   [Right-click gold pile] to gather"
-		return "Unit selected   [Right-click] to move"
+			return "Worker selected   [Right-click gold pile] gather   [Right-click enemy] attack"
+		return "Unit selected   [Right-click] move   [Right-click enemy] attack"
 
 	return "[Click] select unit   [Drag] box-select   [WASD] pan camera   [Scroll] zoom"
 
@@ -242,17 +244,46 @@ func _spawn_starting_units() -> void:
 func _spawn_unit(pos: Vector3, uid: String) -> void:
 	var u = UnitScene.instantiate()
 	u.unit_id  = uid
+	u.owner_id = "player1"
 	u.position = pos
 	u.deposited_gold.connect(_on_gold_deposited)
+	u.died.connect(_on_unit_died.bind(u))
 	add_child(u)   # _ready() fires here, loading all stats from Data
 	all_units.append(u)
 	player_supply += u.supply_cost
+
+func _spawn_enemy_units() -> void:
+	# Small raiding party used as combat targets for Phase 5 (no AI yet)
+	var types : Array[String]   = ["raider", "raider", "raider", "giant"]
+	var offsets : Array[Vector3] = [
+		Vector3(-5.0, 0.0,  2.0),
+		Vector3( 0.0, 0.0,  0.0),
+		Vector3( 5.0, 0.0,  2.0),
+		Vector3( 0.0, 0.0, -6.0),
+	]
+	for i in types.size():
+		_spawn_enemy_unit(ENEMY_START + offsets[i], types[i])
+
+func _spawn_enemy_unit(pos: Vector3, uid: String) -> void:
+	var u = UnitScene.instantiate()
+	u.unit_id  = uid
+	u.owner_id = "player2"
+	u.position = pos
+	u.died.connect(_on_unit_died.bind(u))
+	add_child(u)
+	all_units.append(u)
 
 # ════════════════════════════════════════════════════════════════════════════
 # Economy signals
 # ════════════════════════════════════════════════════════════════════════════
 func _on_gold_deposited(amount: int) -> void:
 	player_gold += amount
+
+func _on_unit_died(unit: Unit) -> void:
+	all_units.erase(unit)
+	selected.erase(unit)
+	if unit.owner_id == "player1":
+		player_supply -= unit.supply_cost
 
 func _on_production_complete(unit_id: String, spawn_pos: Vector3) -> void:
 	_spawn_unit(spawn_pos, unit_id)
@@ -374,15 +405,14 @@ func _unhandled_input(event: InputEvent) -> void:
 # ════════════════════════════════════════════════════════════════════════════
 func _pick_at(screen_pos: Vector2) -> void:
 	_deselect_all()
-	# Units first (layer 2), then buildings (layer 3)
 	var hit = _raycast_layer(screen_pos, 2)
-	if hit is Unit:
+	if hit is Unit and (hit as Unit).owner_id == "player1":
 		(hit as Unit).select(true)
 		selected.append(hit)
 		return
 	hit = _raycast_layer(screen_pos, 3)
 	if hit is Building:
-		selected.append(hit)  # buildings have no ring yet; HUD shows the state
+		selected.append(hit)
 
 func _finish_box_select(end_pos: Vector2) -> void:
 	_deselect_all()
@@ -392,6 +422,8 @@ func _finish_box_select(end_pos: Vector2) -> void:
 	)
 	for u in all_units:
 		var unit := u as Unit
+		if unit.owner_id != "player1":
+			continue
 		var screen := camera.unproject_position(unit.global_position + Vector3(0.0, 0.65, 0.0))
 		if rect.has_point(screen):
 			unit.select(true)
@@ -416,7 +448,16 @@ func _right_click(screen_pos: Vector2) -> void:
 	if selected.is_empty():
 		return
 
-	# Priority 1 — right-click on resource node with workers selected → gather
+	# Priority 1 — right-click on enemy unit → attack
+	var hit_unit = _raycast_layer(screen_pos, 2)
+	if hit_unit is Unit and (hit_unit as Unit).owner_id != "player1":
+		var sel_units := _get_selected_units()
+		if not sel_units.is_empty():
+			for u in sel_units:
+				(u as Unit).attack(hit_unit as Unit)
+			return
+
+	# Priority 2 — right-click on resource node with workers selected → gather
 	var rn = _raycast_layer(screen_pos, 4)
 	if rn is ResourceNode and not rn.is_depleted():
 		var workers := _get_selected_units().filter(
@@ -427,7 +468,7 @@ func _right_click(screen_pos: Vector2) -> void:
 				(w as Unit).gather_from(rn as ResourceNode, main_building)
 			return
 
-	# Priority 2 — right-click on ground → move
+	# Priority 3 — right-click on ground → move
 	var world_pos := _raycast_ground(screen_pos)
 	if world_pos == Vector3.INF:
 		return
