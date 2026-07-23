@@ -234,7 +234,7 @@ const BUILDINGS : Dictionary = {
 	# ── The North ─────────────────────────────────────────────────────────────
 	"great_hall": {
 		"name": "Great Hall",  "faction": "north",
-		"hp": 800,  "gold_cost": 0,   "build_time": 0.0,
+		"hp": 800,  "gold_cost": 250, "build_time": 45.0,
 		"supply_provided": 10, "size": 5.0,
 		"color": Color(0.50, 0.46, 0.42),
 		"trains": ["smallfolk"],
@@ -264,7 +264,7 @@ const BUILDINGS : Dictionary = {
 	# ── Wildlings ─────────────────────────────────────────────────────────────
 	"great_tent": {
 		"name": "Great Tent",  "faction": "wildlings",
-		"hp": 500,  "gold_cost": 0,   "build_time": 0.0,
+		"hp": 500,  "gold_cost": 200, "build_time": 35.0,
 		"supply_provided": 10, "size": 4.0,
 		"color": Color(0.55, 0.42, 0.28),
 		"trains": ["forager"],
@@ -281,7 +281,7 @@ const BUILDINGS : Dictionary = {
 	# ── Targaryens ────────────────────────────────────────────────────────────
 	"manse": {
 		"name": "Manse",       "faction": "targaryen",
-		"hp": 700,  "gold_cost": 0,   "build_time": 0.0,
+		"hp": 700,  "gold_cost": 280, "build_time": 45.0,
 		"supply_provided": 10, "size": 5.0,
 		"color": Color(0.60, 0.45, 0.40),
 		"trains": ["steward"],

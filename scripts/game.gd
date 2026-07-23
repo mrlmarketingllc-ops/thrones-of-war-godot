@@ -86,9 +86,9 @@ const BuildingScene     := preload("res://scenes/building.tscn")
 const ResourceNodeScene := preload("res://scenes/resource_node.tscn")
 
 const MAP_SIZE       : float = 100.0
-const CAM_PAN_SPEED  : float = 25.0
-const CAM_ZOOM_MIN   : float = 8.0
-const CAM_ZOOM_MAX   : float = 42.0
+const CAM_PAN_SPEED  : float = 45.0
+const CAM_ZOOM_MIN   : float = 12.0
+const CAM_ZOOM_MAX   : float = 55.0
 const DRAG_THRESHOLD : float = 5.0
 const EDGE_MARGIN    : int   = 20
 
@@ -173,17 +173,12 @@ func _build_scene() -> void:
 	_spawn_terrain_features()
 
 func _setup_sky() -> void:
-	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color       = Color(0.15, 0.20, 0.35)
-	sky_mat.sky_horizon_color   = Color(0.50, 0.40, 0.28)
-	sky_mat.ground_bottom_color = Color(0.18, 0.18, 0.18)
-	var sky := Sky.new()
-	sky.sky_material = sky_mat
 	var env := Environment.new()
-	env.sky                  = sky
-	env.background_mode      = Environment.BG_SKY
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.6
+	env.background_mode      = Environment.BG_COLOR
+	env.background_color     = Color(0.20, 0.35, 0.15)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color  = Color(0.88, 0.88, 0.82)
+	env.ambient_light_energy = 0.95
 	($WorldEnvironment as WorldEnvironment).environment = env
 
 func _setup_lighting() -> void:
@@ -199,7 +194,7 @@ func _setup_ground() -> void:
 	mat.albedo_color = Color(0.24, 0.40, 0.18)
 	mat.roughness    = 1.0
 	var plane := PlaneMesh.new()
-	plane.size     = Vector2(MAP_SIZE, MAP_SIZE)
+	plane.size     = Vector2(MAP_SIZE * 6.0, MAP_SIZE * 6.0)
 	plane.material = mat
 	var vis := MeshInstance3D.new()
 	vis.name     = "GroundMesh"
@@ -227,8 +222,8 @@ func _setup_camera() -> void:
 	add_child(camera_rig)
 	camera                  = Camera3D.new()
 	camera.name             = "Camera3D"
-	camera.position         = Vector3(0.0, 18.0, 14.0)
-	camera.rotation_degrees = Vector3(-55.0, 0.0, 0.0)
+	camera.position         = Vector3(0.0, 30.0, 0.0)
+	camera.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
 	camera_rig.add_child(camera)
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -567,7 +562,7 @@ func _setup_ui() -> void:
 	_minimap.game_ref = self
 	_minimap.size     = Vector2(160.0, 160.0)
 	var vp_size := get_viewport().get_visible_rect().size
-	_minimap.position     = vp_size - Vector2(170.0, 170.0)
+	_minimap.position     = Vector2(10.0, vp_size.y - 170.0)
 	_minimap.mouse_filter = Control.MOUSE_FILTER_STOP
 	canvas.add_child(_minimap)
 
@@ -771,6 +766,11 @@ func _show_lobby() -> void:
 	_lobby_layer        = CanvasLayer.new()
 	_lobby_layer.layer  = 10
 	add_child(_lobby_layer)
+
+	var bg := ColorRect.new()
+	bg.color = Color(0.06, 0.04, 0.10, 1.0)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_lobby_layer.add_child(bg)
 
 	var panel := Panel.new()
 	panel.anchor_left   = 0.5
@@ -1135,10 +1135,10 @@ func _is_world_pos_visible(world_pos: Vector3) -> bool:
 # ════════════════════════════════════════════════════════════════════════════
 func _register_input_actions() -> void:
 	var bindings : Dictionary = {
-		"cam_left":  [KEY_A, KEY_LEFT],
-		"cam_right": [KEY_D, KEY_RIGHT],
-		"cam_up":    [KEY_W, KEY_UP],
-		"cam_down":  [KEY_S, KEY_DOWN],
+		"cam_left":  [KEY_LEFT],
+		"cam_right": [KEY_RIGHT],
+		"cam_up":    [KEY_UP],
+		"cam_down":  [KEY_DOWN],
 	}
 	for action: String in bindings:
 		if not InputMap.has_action(action):
@@ -1153,8 +1153,6 @@ func _register_input_actions() -> void:
 # ════════════════════════════════════════════════════════════════════════════
 func _process(delta: float) -> void:
 	_pan_camera(delta)
-	if not dragging:
-		_edge_scroll(delta)
 	_fog_tick += 1
 	if _fog_tick >= 8:
 		_fog_tick = 0
@@ -1197,24 +1195,15 @@ func _edge_scroll(delta: float) -> void:
 		_apply_cam_pan(move, delta)
 
 func _apply_cam_pan(move: Vector2, delta: float) -> void:
-	var cam_right   := camera.global_transform.basis.x.normalized()
-	var cam_forward := -camera.global_transform.basis.z
-	cam_forward.y   = 0.0
-	cam_forward     = cam_forward.normalized()
-	var dp := (cam_right * move.x + cam_forward * -move.y) * CAM_PAN_SPEED * delta
+	var dp := Vector3(move.x, 0.0, -move.y) * CAM_PAN_SPEED * delta
 	camera_rig.position += dp
-	camera_rig.position.x = clamp(camera_rig.position.x, 0.0, MAP_SIZE)
-	camera_rig.position.z = clamp(camera_rig.position.z, 0.0, MAP_SIZE)
+	camera_rig.position.x = clampf(camera_rig.position.x, 0.0, MAP_SIZE)
+	camera_rig.position.z = clampf(camera_rig.position.z, 0.0, MAP_SIZE)
 
 func _zoom(amount: float) -> void:
 	if camera == null:
 		return
-	var new_y : float = clamp(camera.position.y + amount, CAM_ZOOM_MIN, CAM_ZOOM_MAX)
-	var ratio : float = 1.0
-	if camera.position.y != 0.0:
-		ratio = new_y / camera.position.y
-	camera.position.y = new_y
-	camera.position.z = clamp(camera.position.z * ratio, CAM_ZOOM_MIN * 0.7, CAM_ZOOM_MAX * 0.7)
+	camera.position.y = clampf(camera.position.y + amount, CAM_ZOOM_MIN, CAM_ZOOM_MAX)
 
 # ════════════════════════════════════════════════════════════════════════════
 # Input events
@@ -1340,13 +1329,16 @@ func _right_click(screen_pos: Vector2) -> void:
 		var workers := _get_selected_units().filter(
 			func(e): return (e as Unit).unit_type == Unit.UnitType.WORKER
 		)
-		if not workers.is_empty() and main_building != null:
+		if not workers.is_empty():
 			for w in workers:
+				var deposit : Building = _get_nearest_deposit((w as Unit).global_position)
+				if deposit == null:
+					continue
 				if is_pvp:
 					var rn_idx : int = resource_nodes.find(rn)
-					_rpc_cmd_gather.rpc((w as Unit).net_id, rn_idx, main_building.net_id)
+					_rpc_cmd_gather.rpc((w as Unit).net_id, rn_idx, deposit.net_id)
 				else:
-					(w as Unit).gather_from(rn as ResourceNode, main_building)
+					(w as Unit).gather_from(rn as ResourceNode, deposit)
 			return
 
 	# Priority 3 — right-click on ground → move
@@ -1402,6 +1394,22 @@ func _get_buildable_buildings() -> Array:
 		result.append(bldg_id)
 	return result
 
+func _get_nearest_deposit(pos: Vector3) -> Building:
+	var best   : Building = null
+	var best_d : float    = INF
+	for b_node in all_buildings:
+		var b := b_node as Building
+		if b.owner_id != local_owner:
+			continue
+		var bdata : Dictionary = Data.BUILDINGS.get(b.building_id, {})
+		if int(bdata.get("supply_provided", 0)) <= 0:
+			continue
+		var d : float = pos.distance_to(b.global_position)
+		if d < best_d:
+			best_d = d
+			best   = b
+	return best
+
 func _place_building(world_pos: Vector3, bldg_id: String) -> void:
 	if is_pvp:
 		return
@@ -1412,7 +1420,7 @@ func _place_building(world_pos: Vector3, bldg_id: String) -> void:
 	player_gold -= cost
 	var b = BuildingScene.instantiate()
 	b.building_id = bldg_id
-	b.owner_id    = "player1"
+	b.owner_id    = local_owner
 	b.position    = Vector3(world_pos.x, 0.0, world_pos.z)
 	b.production_complete.connect(_on_production_complete)
 	add_child(b)
