@@ -85,19 +85,19 @@ const UnitScene         := preload("res://scenes/unit.tscn")
 const BuildingScene     := preload("res://scenes/building.tscn")
 const ResourceNodeScene := preload("res://scenes/resource_node.tscn")
 
-const MAP_SIZE       : float = 100.0
-const CAM_PAN_SPEED  : float = 45.0
+const MAP_SIZE       : float = 200.0
+const CAM_PAN_SPEED  : float = 80.0
 const CAM_ZOOM_MIN   : float = 12.0
-const CAM_ZOOM_MAX   : float = 55.0
+const CAM_ZOOM_MAX   : float = 80.0
 const DRAG_THRESHOLD : float = 5.0
 const EDGE_MARGIN    : int   = 20
 
-const PLAYER_START   := Vector3(18.0, 0.0, 18.0)
-const ENEMY_START    := Vector3(75.0, 0.0, 75.0)
+const PLAYER_START   := Vector3(30.0, 0.0, 30.0)
+const ENEMY_START    := Vector3(170.0, 0.0, 170.0)
 
 # Fog of war
-const FOG_SIZE   : int   = 25     # 25×25 pixel texture → 4 world-unit cells
-const VISION_R   : float = 14.0   # vision radius per player unit (world units)
+const FOG_SIZE   : int   = 50     # 50×50 pixel texture → 4 world-unit cells
+const VISION_R   : float = 20.0   # vision radius per player unit (world units)
 
 # ════════════════════════════════════════════════════════════════════════════
 # State
@@ -136,6 +136,11 @@ var _build_bldg  : String = ""      # building type chosen for placement
 var _ai_tick     : int    = 0
 var _wave_timer  : float  = 90.0   # seconds until next enemy wave
 var _spawn_timer : float  = 45.0   # seconds until next enemy reinforcement
+
+# AI (solo mode)
+var ai_faction       : String   = "wildlings"
+var ai_gold          : int      = 150
+var ai_main_building : Building = null
 
 # PvP networking
 var is_pvp          : bool                = false
@@ -237,7 +242,8 @@ func _spawn_terrain_features() -> void:
 	_spawn_trees()
 
 func _spawn_river() -> void:
-	# A river running east–west at z ≈ 38, between the two bases
+	# A river running east–west at z = 100 (midpoint of 200-unit map)
+	const RIVER_Z : float = 100.0
 	var water_mat := StandardMaterial3D.new()
 	water_mat.albedo_color = Color(0.12, 0.30, 0.52, 0.88)
 	water_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -250,7 +256,7 @@ func _spawn_river() -> void:
 	var water_vis := MeshInstance3D.new()
 	water_vis.name     = "RiverSurface"
 	water_vis.mesh     = water_plane
-	water_vis.position = Vector3(MAP_SIZE * 0.5, 0.03, 38.0)
+	water_vis.position = Vector3(MAP_SIZE * 0.5, 0.03, RIVER_Z)
 	add_child(water_vis)
 
 	# Muddy riverbanks — thin strips along each shore
@@ -263,16 +269,16 @@ func _spawn_river() -> void:
 		bank_plane.material = bank_mat
 		var bank_vis := MeshInstance3D.new()
 		bank_vis.mesh     = bank_plane
-		bank_vis.position = Vector3(MAP_SIZE * 0.5, 0.02, 38.0 + side * 4.8)
+		bank_vis.position = Vector3(MAP_SIZE * 0.5, 0.02, RIVER_Z + side * 4.8)
 		add_child(bank_vis)
 
 	# ── Impassable river walls (layer 5) with bridge gaps ─────────────────────
-	# Bridge 1 gap: x = 23..33  (centre x=28)
-	# Bridge 2 gap: x = 66..76  (centre x=71)
+	# Bridge 1 gap: x = 46..66  (centre x=56)
+	# Bridge 2 gap: x = 134..154 (centre x=144)
 	var wall_segs : Array = [
-		[10.5, 25.0],   # x = -2  → 23
-		[49.5, 33.0],   # x = 33  → 66
-		[90.0, 28.0],   # x = 76  → 104
+		[ 23.0, 46.0],   # x =   0 →  46
+		[100.0, 68.0],   # x =  66 → 134
+		[177.0, 46.0],   # x = 154 → 200
 	]
 	for ws in wall_segs:
 		var wc    : float = ws[0]
@@ -286,21 +292,25 @@ func _spawn_river() -> void:
 		w_body.collision_layer = 16   # layer 5 — impassable terrain
 		w_body.collision_mask  = 0
 		w_body.add_child(w_col)
-		w_body.position = Vector3(wc, 0.0, 38.0)
+		w_body.position = Vector3(wc, 0.0, RIVER_Z)
 		add_child(w_body)
 
 func _spawn_hills() -> void:
-	# Pre-placed conical hills with solid collision — units walk up/around them
+	# Pre-placed conical hills — smaller and more varied than before
 	# [center_x, center_z, base_radius, height]
 	var defs : Array = [
-		[25.0, 22.0, 9.0, 3.0],
-		[72.0, 20.0, 7.0, 2.5],
-		[20.0, 72.0, 8.0, 2.8],
-		[78.0, 72.0, 9.0, 3.5],
-		[30.0, 53.0, 6.0, 2.0],
-		[68.0, 47.0, 7.0, 2.2],
-		[50.0, 12.0, 6.0, 1.8],
-		[50.0, 88.0, 7.0, 2.5],
+		[ 55.0,  42.0, 3.5, 1.2],
+		[ 80.0,  55.0, 2.5, 0.8],
+		[ 42.0,  70.0, 4.0, 1.4],
+		[115.0,  60.0, 2.0, 0.7],
+		[ 70.0,  80.0, 3.0, 1.0],
+		[130.0,  80.0, 2.5, 0.8],
+		[ 60.0, 130.0, 3.5, 1.1],
+		[ 90.0, 145.0, 2.0, 0.7],
+		[145.0, 130.0, 4.0, 1.3],
+		[165.0,  85.0, 2.5, 0.9],
+		[ 35.0, 155.0, 3.0, 1.0],
+		[110.0, 170.0, 2.5, 0.8],
 	]
 	for raw in defs:
 		var cx   : float = raw[0]
@@ -345,10 +355,11 @@ func _spawn_hills() -> void:
 
 func _spawn_rocks() -> void:
 	var positions : Array[Vector2] = [
-		Vector2(42.0, 23.0), Vector2(60.0, 30.0),
-		Vector2(15.0, 57.0), Vector2(82.0, 48.0),
-		Vector2(55.0, 82.0), Vector2(27.0, 44.0),
-		Vector2(64.0, 85.0), Vector2(38.0, 64.0),
+		Vector2( 84.0,  46.0), Vector2(120.0,  60.0),
+		Vector2( 30.0, 114.0), Vector2(164.0,  96.0),
+		Vector2(110.0, 164.0), Vector2( 54.0,  88.0),
+		Vector2(128.0, 170.0), Vector2( 76.0, 128.0),
+		Vector2( 55.0,  55.0), Vector2(145.0, 145.0),
 	]
 	for rp in positions:
 		_place_rock_cluster(Vector3(rp.x, 0.01, rp.y))
@@ -391,12 +402,12 @@ func _place_rock_cluster(center: Vector3) -> void:
 
 func _spawn_bridges() -> void:
 	# Two stone bridges crossing the river — one left-centre, one right-centre
-	for bx in [28.0, 71.0]:
+	for bx in [56.0, 144.0]:
 		_place_bridge(bx)
 
 func _place_bridge(bx: float) -> void:
 	var node := Node3D.new()
-	node.position = Vector3(bx, 0.0, 38.0)
+	node.position = Vector3(bx, 0.0, 100.0)
 
 	# Bridge deck — stone-coloured flat platform flush with ground
 	var deck_mat := StandardMaterial3D.new()
@@ -449,26 +460,28 @@ func _spawn_trees() -> void:
 		PLAYER_START + Vector3(14.0, 0.0,  0.0),
 		PLAYER_START + Vector3( 0.0, 0.0, 14.0),
 		PLAYER_START + Vector3(14.0, 0.0, 14.0),
-		Vector3(50.0, 0.0, 44.0),
-		Vector3(50.0, 0.0, 56.0),
+		ENEMY_START  + Vector3(-14.0, 0.0,  0.0),
+		ENEMY_START  + Vector3(  0.0, 0.0,-14.0),
+		Vector3(100.0, 0.0,  80.0),
+		Vector3(100.0, 0.0, 120.0),
 	]
 
 	var placed : int = 0
 	var tries  : int = 0
-	while placed < 38 and tries < 800:
+	while placed < 65 and tries < 1600:
 		tries += 1
-		var x : float = rng.randf_range(4.0, 96.0)
-		var z : float = rng.randf_range(4.0, 96.0)
+		var x : float = rng.randf_range(4.0, 196.0)
+		var z : float = rng.randf_range(4.0, 196.0)
 		var pos := Vector3(x, 0.01, z)
 
 		# Reject if inside a base / resource zone
 		var ok : bool = true
 		for ep in excl:
-			if pos.distance_to(ep) < 13.0:
+			if pos.distance_to(ep) < 14.0:
 				ok = false
 				break
 		# Reject if in the river band
-		if absf(z - 38.0) < 6.0:
+		if absf(z - 100.0) < 6.0:
 			ok = false
 		if not ok:
 			continue
@@ -622,7 +635,7 @@ func _get_hint_text() -> String:
 			return "Worker — [B] build   [Right-click gold] gather   [Right-click enemy] attack"
 		return "Unit — [Right-click] move / attack"
 
-	return "[Click/Drag] select   [WASD] pan   [Scroll] zoom"
+	return "[Click/Drag] select   [Arrows/Edge] pan   [Scroll] zoom"
 
 # ════════════════════════════════════════════════════════════════════════════
 # Spawn helpers
@@ -642,11 +655,13 @@ func _spawn_starting_buildings() -> void:
 
 func _spawn_resource_nodes() -> void:
 	var node_positions : Array[Vector3] = [
-		PLAYER_START + Vector3(14.0,  0.0,  0.0),   # east  (close)
-		PLAYER_START + Vector3( 0.0,  0.0, 14.0),   # south (close)
-		PLAYER_START + Vector3(14.0,  0.0, 14.0),   # southeast
-		Vector3(50.0, 0.0, 44.0),                   # contested mid-north
-		Vector3(50.0, 0.0, 56.0),                   # contested mid-south
+		PLAYER_START + Vector3(14.0, 0.0,  0.0),    # near player — east
+		PLAYER_START + Vector3( 0.0, 0.0, 14.0),    # near player — south
+		PLAYER_START + Vector3(14.0, 0.0, 14.0),    # near player — southeast
+		ENEMY_START  + Vector3(-14.0, 0.0,  0.0),   # near enemy  — west
+		ENEMY_START  + Vector3(  0.0, 0.0,-14.0),   # near enemy  — north
+		Vector3(100.0, 0.0,  80.0),                  # contested mid-north
+		Vector3(100.0, 0.0, 120.0),                  # contested mid-south
 	]
 	for pos in node_positions:
 		var rn = ResourceNodeScene.instantiate()
@@ -680,30 +695,60 @@ func _spawn_unit(pos: Vector3, uid: String) -> void:
 	all_units.append(u)
 	player_supply += u.supply_cost
 
-func _spawn_enemy_units() -> void:
-	# Small raiding party used as combat targets for Phase 5 (no AI yet)
-	var types : Array[String]   = ["raider", "raider", "raider", "giant"]
-	var offsets : Array[Vector3] = [
-		Vector3(-5.0, 0.0,  2.0),
-		Vector3( 0.0, 0.0,  0.0),
-		Vector3( 5.0, 0.0,  2.0),
-		Vector3( 0.0, 0.0, -6.0),
-	]
-	for i in types.size():
-		_spawn_enemy_unit(ENEMY_START + offsets[i], types[i])
+func _spawn_enemy_base() -> void:
+	var fdata   : Dictionary = Data.FACTIONS.get(ai_faction, {})
+	var bldg_id : String     = fdata.get("main_building", "great_tent")
+	var worker  : String     = fdata.get("worker",        "forager")
+	var starter : String     = fdata.get("starter_unit",  "raider")
+
+	ai_main_building = _spawn_ai_building(ENEMY_START + Vector3(-4.0, 0.0, -4.0), bldg_id)
+
+	var bar_id : String = _get_ai_barracks_id()
+	if bar_id != "":
+		_spawn_ai_building(ENEMY_START + Vector3(6.0, 0.0, 1.0), bar_id)
+
+	for offset : Vector3 in [Vector3(3.0, 0.0, 0.0), Vector3(-3.0, 0.0, 0.0), Vector3(0.0, 0.0, 3.0)]:
+		_spawn_enemy_unit(ENEMY_START + offset, worker)
+
+	_spawn_enemy_unit(ENEMY_START + Vector3(0.0, 0.0, -5.0), starter)
+	_spawn_enemy_unit(ENEMY_START + Vector3(3.0, 0.0, -5.0), starter)
+
+func _spawn_ai_building(pos: Vector3, bldg_id: String) -> Building:
+	var b = BuildingScene.instantiate()
+	b.building_id = bldg_id
+	b.owner_id    = "player2"
+	b.position    = pos
+	b.production_complete.connect(_on_ai_production_complete)
+	add_child(b)
+	all_buildings.append(b)
+	return b as Building
+
+func _get_ai_barracks_id() -> String:
+	for bldg_id : String in Data.BUILDINGS:
+		var bdata : Dictionary = Data.BUILDINGS[bldg_id]
+		if bdata.get("faction", "") != ai_faction:
+			continue
+		if int(bdata.get("supply_provided", 0)) > 0:
+			continue
+		var trains : Array = bdata.get("trains", [])
+		if trains.is_empty():
+			continue
+		return bldg_id
+	return ""
 
 func _spawn_enemy_unit(pos: Vector3, uid: String) -> void:
 	var u = UnitScene.instantiate()
 	u.unit_id  = uid
 	u.owner_id = "player2"
 	u.position = pos
+	u.deposited_gold.connect(_on_ai_gold_deposited)
 	u.died.connect(_on_unit_died.bind(u))
 	add_child(u)
 	all_units.append(u)
 
 func _launch_enemy_wave() -> void:
 	# Route each enemy through the nearest bridge, then deep into player territory
-	var bridge_xs : Array[float] = [28.0, 71.0]
+	var bridge_xs : Array[float] = [56.0, 144.0]
 	for u_node in all_units:
 		var u := u_node as Unit
 		if u.owner_id != "player2":
@@ -729,13 +774,13 @@ func _try_spawn_enemy() -> void:
 	for u_node in all_units:
 		if (u_node as Unit).owner_id == "player2":
 			count += 1
-	if count >= 12:
+	if count >= 18:
 		return
-	var pool : Array[String] = ["raider", "raider", "skinchanger_scout", "thenn_skirmisher", "raider"]
-	var uid  : String = pool[randi() % pool.size()]
+	var fdata   : Dictionary = Data.FACTIONS.get(ai_faction, {})
+	var starter : String     = fdata.get("starter_unit", "raider")
 	_spawn_enemy_unit(
 		ENEMY_START + Vector3(randf_range(-7.0, 7.0), 0.0, randf_range(-7.0, 7.0)),
-		uid
+		starter
 	)
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -743,6 +788,12 @@ func _try_spawn_enemy() -> void:
 # ════════════════════════════════════════════════════════════════════════════
 func _on_gold_deposited(amount: int) -> void:
 	player_gold += amount
+
+func _on_ai_gold_deposited(amount: int) -> void:
+	ai_gold += amount
+
+func _on_ai_production_complete(unit_id: String, spawn_pos: Vector3) -> void:
+	_spawn_enemy_unit(spawn_pos, unit_id)
 
 func _on_unit_died(unit: Unit) -> void:
 	all_units.erase(unit)
@@ -905,10 +956,13 @@ func _on_connection_failed() -> void:
 
 func _begin_solo() -> void:
 	_close_lobby()
+	var all_factions : Array[String] = ["north", "wildlings", "targaryen"]
+	all_factions.erase(player_faction)
+	ai_faction = all_factions[randi() % all_factions.size()]
 	_spawn_starting_buildings()
 	_spawn_resource_nodes()
 	_spawn_starting_units()
-	_spawn_enemy_units()
+	_spawn_enemy_base()
 
 func _close_lobby() -> void:
 	if _lobby_layer != null:
@@ -1153,6 +1207,7 @@ func _register_input_actions() -> void:
 # ════════════════════════════════════════════════════════════════════════════
 func _process(delta: float) -> void:
 	_pan_camera(delta)
+	_edge_scroll(delta)
 	_fog_tick += 1
 	if _fog_tick >= 8:
 		_fog_tick = 0
@@ -1433,27 +1488,92 @@ func _place_building(world_pos: Vector3, bldg_id: String) -> void:
 		(w as Unit).move_to(sp)
 
 func _update_enemy_ai() -> void:
+	var ai_workers  : Array = []
+	var ai_military : Array = []
 	for u_node in all_units:
-		var enemy := u_node as Unit
-		if enemy.owner_id == "player1":
+		var u : Unit = u_node as Unit
+		if u.owner_id != "player2":
 			continue
-		# Already chasing or attacking a valid target — leave it
+		if u.unit_type == Unit.UnitType.WORKER:
+			ai_workers.append(u)
+		else:
+			ai_military.append(u)
+
+	# 1. Economy — send idle workers to nearest resource node
+	if ai_main_building != null and is_instance_valid(ai_main_building):
+		for w_node in ai_workers:
+			var w : Unit = w_node as Unit
+			if w.state == Unit.UnitState.IDLE:
+				var rn : ResourceNode = _nearest_resource_node(w.global_position)
+				if rn != null:
+					w.gather_from(rn, ai_main_building)
+
+	# 2. Production — spend ai_gold to queue units from each AI building
+	var fdata  : Dictionary = Data.FACTIONS.get(ai_faction, {})
+	var worker : String     = fdata.get("worker", "")
+	for b_node in all_buildings:
+		var b : Building = b_node as Building
+		if b.owner_id != "player2":
+			continue
+		if not b.production_queue.is_empty():
+			continue
+		var bdata  : Dictionary = Data.BUILDINGS.get(b.building_id, {})
+		var trains : Array      = bdata.get("trains", [])
+		if trains.is_empty():
+			continue
+		var to_train : String = ""
+		if worker in trains and ai_workers.size() < 5:
+			to_train = worker
+		else:
+			for t : String in trains:
+				if t != worker:
+					to_train = t
+					break
+			if to_train.is_empty() and not trains.is_empty():
+				to_train = trains[0]
+		if to_train.is_empty():
+			continue
+		var udata : Dictionary = Data.UNITS.get(to_train, {})
+		var cost  : int        = udata.get("gold_cost", 30)
+		if ai_gold >= cost:
+			if b.enqueue(to_train):
+				ai_gold -= cost
+
+	# 3. Combat — aggro any player unit within 45 units
+	for u_node in ai_military:
+		var enemy : Unit = u_node as Unit
 		if (enemy.state == Unit.UnitState.ATTACK_MOVE or enemy.state == Unit.UnitState.ATTACKING) \
 				and enemy.attack_target != null and is_instance_valid(enemy.attack_target):
 			continue
-		# Scan for nearest player unit within aggro radius
-		var best   : Unit  = null
-		var best_d : float = 28.0
-		for t_node in all_units:
-			var target := t_node as Unit
-			if target.owner_id != "player1":
-				continue
-			var d : float = enemy.global_position.distance_to(target.global_position)
-			if d < best_d:
-				best_d = d
-				best   = target
-		if best != null:
-			enemy.attack(best)
+		var nearest : Unit = _nearest_player_unit(enemy.global_position, 45.0)
+		if nearest != null:
+			enemy.attack(nearest)
+
+func _nearest_resource_node(pos: Vector3) -> ResourceNode:
+	var best   : ResourceNode = null
+	var best_d : float        = INF
+	for rn_node in resource_nodes:
+		var rn : ResourceNode = rn_node as ResourceNode
+		if rn.is_depleted():
+			continue
+		var d : float = pos.distance_to(rn.global_position)
+		if d < best_d:
+			best_d = d
+			best   = rn
+	return best
+
+func _nearest_player_unit(pos: Vector3, radius: float) -> Unit:
+	var best   : Unit  = null
+	var best_d : float = radius
+	for u_node in all_units:
+		var u : Unit = u_node as Unit
+		if u.owner_id != "player1":
+			continue
+		var d : float = pos.distance_to(u.global_position)
+		if d < best_d:
+			best_d = d
+			best   = u
+	return best
 
 # ════════════════════════════════════════════════════════════════════════════
 # Raycasting helpers
