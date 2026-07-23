@@ -24,7 +24,7 @@ func _process(delta: float) -> void:
 		return
 	production_timer -= delta
 	if production_timer <= 0.0:
-		var unit_type := production_queue.pop_front()
+		var unit_type : String = production_queue.pop_front()
 		production_complete.emit(unit_type, get_spawn_pos())
 		if not production_queue.is_empty():
 			production_timer = TRAIN_TIMES.get(production_queue[0], 8.0)

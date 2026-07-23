@@ -41,10 +41,10 @@ func _ready() -> void:
 # ── Visual construction ───────────────────────────────────────────────────────
 
 func _build_visuals() -> void:
-	var is_worker := unit_type == UnitType.WORKER
-	var radius    := 0.30 if is_worker else 0.35
-	var height    := 0.90 if is_worker else 1.00
-	var y_offset  := 0.55 if is_worker else 0.65
+	var is_worker : bool  = unit_type == UnitType.WORKER
+	var radius    : float = 0.30 if is_worker else 0.35
+	var height    : float = 0.90 if is_worker else 1.00
+	var y_offset  : float = 0.55 if is_worker else 0.65
 
 	# Capsule body
 	var body_mat := StandardMaterial3D.new()

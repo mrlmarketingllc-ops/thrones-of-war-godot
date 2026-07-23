@@ -241,8 +241,8 @@ func _on_gold_deposited(amount: int) -> void:
 	player_gold += amount
 
 func _on_production_complete(unit_type: String, spawn_pos: Vector3) -> void:
-	var color := Color(0.80, 0.65, 0.40) if unit_type == "worker" else Color(0.35, 0.60, 1.0)
-	var type  := Unit.UnitType.WORKER if unit_type == "worker" else Unit.UnitType.SOLDIER
+	var color : Color         = Color(0.80, 0.65, 0.40) if unit_type == "worker" else Color(0.35, 0.60, 1.0)
+	var type  : Unit.UnitType = Unit.UnitType.WORKER if unit_type == "worker" else Unit.UnitType.SOLDIER
 	_spawn_unit(spawn_pos, color, type)
 
 # ════════════════════════════════════════════════════════════════════════════
