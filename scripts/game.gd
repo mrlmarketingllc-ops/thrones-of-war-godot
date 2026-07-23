@@ -131,6 +131,10 @@ var _minimap      : MinimapPanel
 var drag_start := Vector2.ZERO
 var dragging   := false
 
+var _build_menu : bool   = false   # worker build menu open
+var _build_bldg : String = ""      # building type chosen for placement
+var _ai_tick    : int    = 0
+
 # ════════════════════════════════════════════════════════════════════════════
 # Lifecycle
 # ════════════════════════════════════════════════════════════════════════════
@@ -254,33 +258,58 @@ func _update_hud() -> void:
 	hint_label.text = _get_hint_text()
 
 func _get_hint_text() -> String:
+	# Building placement mode
+	if _build_bldg != "":
+		var bdata : Dictionary = Data.BUILDINGS.get(_build_bldg, {})
+		var bname : String     = bdata.get("name", _build_bldg)
+		var bcost : int        = bdata.get("gold_cost", 0)
+		return "Placing %s (%dg) — [Left-click] confirm   [ESC] cancel" % [bname, bcost]
+
+	# Build menu open (worker selecting what to construct)
+	if _build_menu:
+		var available : Array = _get_buildable_buildings()
+		if available.is_empty():
+			return "No buildings available   [ESC] cancel"
+		var text : String = "BUILD:   "
+		for i in available.size():
+			var bdata : Dictionary = Data.BUILDINGS.get(available[i], {})
+			var bname : String     = bdata.get("name", available[i])
+			var bcost : int        = bdata.get("gold_cost", 0)
+			if i > 0:
+				text += "   "
+			text += "[%d] %s (%dg)" % [i + 1, bname, bcost]
+		return text + "   [ESC] cancel"
+
 	var sel_bldgs := _get_selected_buildings()
 	var sel_units := _get_selected_units()
 
 	if not sel_bldgs.is_empty():
-		var b     := sel_bldgs[0] as Building
-		var bdata : Dictionary = Data.BUILDINGS.get(b.building_id, {})
-		var bname : String     = bdata.get("name", b.building_id)
-		var trains : Array     = bdata.get("trains", [])
-		if b.production_queue.is_empty():
-			if trains.is_empty():
-				return "%s selected — nothing to train" % bname
-			var uid   : String     = trains[0]
-			var udata : Dictionary = Data.UNITS.get(uid, {})
-			var uname : String     = udata.get("name", uid)
-			var ucost : int        = udata.get("gold_cost", 0)
-			return "%s selected   [T] Train %s  (%d gold)" % [bname, uname, ucost]
-		else:
+		var b      := sel_bldgs[0] as Building
+		var bdata  : Dictionary = Data.BUILDINGS.get(b.building_id, {})
+		var bname  : String     = bdata.get("name", b.building_id)
+		var trains : Array      = bdata.get("trains", [])
+		if not b.production_queue.is_empty():
 			var pct := int(b.get_progress() * 100.0)
-			return "Training: %d%%   queue: %d / 5" % [pct, b.production_queue.size()]
+			return "%s — Training: %d%%   queue: %d" % [bname, pct, b.production_queue.size()]
+		if trains.is_empty():
+			return "%s — nothing to train here" % bname
+		var text : String = bname + ":   "
+		for i in trains.size():
+			var udata : Dictionary = Data.UNITS.get(trains[i], {})
+			var uname : String     = udata.get("name", trains[i])
+			var ucost : int        = udata.get("gold_cost", 0)
+			if i > 0:
+				text += "   "
+			text += "[%d] %s (%dg)" % [i + 1, uname, ucost]
+		return text
 
 	if not sel_units.is_empty():
 		var workers := sel_units.filter(func(e): return (e as Unit).unit_type == Unit.UnitType.WORKER)
 		if not workers.is_empty():
-			return "Worker selected   [Right-click gold pile] gather   [Right-click enemy] attack"
-		return "Unit selected   [Right-click] move   [Right-click enemy] attack"
+			return "Worker — [B] build   [Right-click gold] gather   [Right-click enemy] attack"
+		return "Unit — [Right-click] move / attack"
 
-	return "[Click] select unit   [Drag] box-select   [WASD] pan camera   [Scroll] zoom"
+	return "[Click/Drag] select   [WASD] pan   [Scroll] zoom"
 
 # ════════════════════════════════════════════════════════════════════════════
 # Spawn helpers
@@ -495,6 +524,10 @@ func _process(delta: float) -> void:
 	if _fog_tick >= 8:
 		_fog_tick = 0
 		_update_fog()
+	_ai_tick += 1
+	if _ai_tick >= 30:
+		_ai_tick = 0
+		_update_enemy_ai()
 	_update_hud()
 
 func _pan_camera(delta: float) -> void:
@@ -550,7 +583,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				drag_start = mb.position
 				dragging   = false
 			else:
-				if dragging:
+				if _build_bldg != "":
+					var world_pos := _raycast_ground(mb.position)
+					if world_pos != Vector3.INF:
+						_place_building(world_pos, _build_bldg)
+					_build_bldg = ""
+				elif dragging:
 					_finish_box_select(mb.position)
 				else:
 					_pick_at(mb.position)
@@ -566,7 +604,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion:
 		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 			var cur := (event as InputEventMouseMotion).position
-			if not dragging and (cur - drag_start).length() > DRAG_THRESHOLD:
+			if not dragging and (cur - drag_start).length() > DRAG_THRESHOLD and _build_bldg == "":
 				dragging = true
 			if dragging:
 				sel_box.visible = true
@@ -579,8 +617,18 @@ func _unhandled_input(event: InputEvent) -> void:
 		match ke.keycode:
 			KEY_ESCAPE:
 				_deselect_all()
+				_build_menu = false
+				_build_bldg = ""
+			KEY_B:
+				_toggle_build_menu()
 			KEY_T:
-				_try_train()
+				_try_train_by_slot(0)
+			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8:
+				var slot : int = ke.keycode - KEY_1
+				if _build_menu:
+					_select_build_slot(slot)
+				else:
+					_try_train_by_slot(slot)
 
 # ════════════════════════════════════════════════════════════════════════════
 # Selection
@@ -659,19 +707,87 @@ func _right_click(screen_pos: Vector2) -> void:
 	for i in count:
 		(units[i] as Unit).move_to(world_pos + _formation_offset(i, count))
 
-func _try_train() -> void:
+func _try_train_by_slot(slot: int) -> void:
 	for b_node in _get_selected_buildings():
-		var building   := b_node as Building
-		var bdata      : Dictionary = Data.BUILDINGS.get(building.building_id, {})
-		var trains     : Array      = bdata.get("trains", [])
-		if trains.is_empty():
+		var building : Building   = b_node as Building
+		var bdata    : Dictionary = Data.BUILDINGS.get(building.building_id, {})
+		var trains   : Array      = bdata.get("trains", [])
+		if slot >= trains.size():
 			continue
-		var unit_id    : String     = trains[0]   # train first unit in list; Phase 9 adds UI buttons
-		var udata      : Dictionary = Data.UNITS.get(unit_id, {})
-		var cost       : int        = udata.get("gold_cost", 50)
+		var unit_id  : String     = trains[slot]
+		var udata    : Dictionary = Data.UNITS.get(unit_id, {})
+		var cost     : int        = udata.get("gold_cost", 50)
 		if player_gold >= cost:
 			if building.enqueue(unit_id):
 				player_gold -= cost
+
+func _toggle_build_menu() -> void:
+	var workers := _get_selected_units().filter(func(e): return (e as Unit).unit_type == Unit.UnitType.WORKER)
+	if workers.is_empty():
+		return
+	_build_menu = not _build_menu
+	_build_bldg = ""
+
+func _select_build_slot(slot: int) -> void:
+	var available : Array = _get_buildable_buildings()
+	if slot >= available.size():
+		return
+	_build_bldg = available[slot]
+	_build_menu = false
+
+func _get_buildable_buildings() -> Array:
+	var result : Array = []
+	for bldg_id in Data.BUILDINGS:
+		var bdata : Dictionary = Data.BUILDINGS[bldg_id]
+		if bdata.get("faction", "") != player_faction:
+			continue
+		if int(bdata.get("gold_cost", 0)) == 0:
+			continue
+		result.append(bldg_id)
+	return result
+
+func _place_building(world_pos: Vector3, bldg_id: String) -> void:
+	var bdata : Dictionary = Data.BUILDINGS.get(bldg_id, {})
+	var cost  : int        = bdata.get("gold_cost", 0)
+	if player_gold < cost:
+		return
+	player_gold -= cost
+	var b = BuildingScene.instantiate()
+	b.building_id = bldg_id
+	b.owner_id    = "player1"
+	b.position    = Vector3(world_pos.x, 0.0, world_pos.z)
+	b.production_complete.connect(_on_production_complete)
+	add_child(b)
+	all_buildings.append(b)
+	player_max_supply += (b as Building).supply_provided
+	# Move any selected workers to stand beside the new building
+	var workers := _get_selected_units().filter(func(e): return (e as Unit).unit_type == Unit.UnitType.WORKER)
+	var sp : Vector3 = (b as Building).get_spawn_pos()
+	for w in workers:
+		(w as Unit).move_to(sp)
+
+func _update_enemy_ai() -> void:
+	for u_node in all_units:
+		var enemy := u_node as Unit
+		if enemy.owner_id == "player1":
+			continue
+		# Already chasing or attacking a valid target — leave it
+		if (enemy.state == Unit.UnitState.ATTACK_MOVE or enemy.state == Unit.UnitState.ATTACKING) \
+				and enemy.attack_target != null and is_instance_valid(enemy.attack_target):
+			continue
+		# Scan for nearest player unit within aggro radius
+		var best   : Unit  = null
+		var best_d : float = 28.0
+		for t_node in all_units:
+			var target := t_node as Unit
+			if target.owner_id != "player1":
+				continue
+			var d : float = enemy.global_position.distance_to(target.global_position)
+			if d < best_d:
+				best_d = d
+				best   = target
+		if best != null:
+			enemy.attack(best)
 
 # ════════════════════════════════════════════════════════════════════════════
 # Raycasting helpers
