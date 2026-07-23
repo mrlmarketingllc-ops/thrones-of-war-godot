@@ -138,9 +138,11 @@ var _wave_timer  : float  = 90.0   # seconds until next enemy wave
 var _spawn_timer : float  = 45.0   # seconds until next enemy reinforcement
 
 # PvP networking
-var is_pvp         : bool                = false
-var local_owner    : String              = "player1"
-var _enet          : ENetMultiplayerPeer = null
+var is_pvp          : bool                = false
+var local_owner     : String              = "player1"
+var player1_faction : String              = "north"
+var player2_faction : String              = "wildlings"
+var _enet           : ENetMultiplayerPeer = null
 var _net_seq       : int                 = 0
 var _p1_seq        : int                 = 100
 var _p2_seq        : int                 = 10000
@@ -776,9 +778,9 @@ func _show_lobby() -> void:
 	panel.anchor_right  = 0.5
 	panel.anchor_bottom = 0.5
 	panel.offset_left   = -200.0
-	panel.offset_top    = -190.0
+	panel.offset_top    = -220.0
 	panel.offset_right  = 200.0
-	panel.offset_bottom = 190.0
+	panel.offset_bottom = 220.0
 	_lobby_layer.add_child(panel)
 
 	var vbox := VBoxContainer.new()
@@ -801,6 +803,31 @@ func _show_lobby() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
 	vbox.add_child(sub)
+
+	var fac_lbl := Label.new()
+	fac_lbl.text = "Your Faction:"
+	vbox.add_child(fac_lbl)
+
+	var fac_row := HBoxContainer.new()
+	fac_row.add_theme_constant_override("separation", 4)
+	vbox.add_child(fac_row)
+
+	var fac_group := ButtonGroup.new()
+	var faction_ids : PackedStringArray = ["north", "wildlings", "targaryen"]
+	for fid in faction_ids:
+		var fdata : Dictionary = Data.FACTIONS.get(fid, {})
+		var fname : String     = fdata.get("name", fid)
+		var fb := Button.new()
+		fb.text                  = fname
+		fb.toggle_mode           = true
+		fb.button_group          = fac_group
+		fb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if fid == player_faction:
+			fb.button_pressed = true
+		fb.pressed.connect(_set_lobby_faction.bind(fid))
+		fac_row.add_child(fb)
+
+	vbox.add_child(HSeparator.new())
 
 	_lobby_ip                     = LineEdit.new()
 	_lobby_ip.placeholder_text    = "Host IP for Join  (e.g. 192.168.1.5)"
@@ -833,6 +860,9 @@ func _show_lobby() -> void:
 	_lobby_status.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
 	vbox.add_child(_lobby_status)
 
+func _set_lobby_faction(fid: String) -> void:
+	player_faction = fid
+
 func _host_game() -> void:
 	_enet = ENetMultiplayerPeer.new()
 	var err : int = _enet.create_server(7777, 2)
@@ -853,17 +883,22 @@ func _join_game() -> void:
 	multiplayer.multiplayer_peer = _enet
 	multiplayer.connected_to_server.connect(_on_joined_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
-	local_owner    = "player2"
-	player_faction = "wildlings"
+	local_owner = "player2"
 	_lobby_status.text = "Connecting to " + ip + "..."
 
 func _on_peer_connected(_id: int) -> void:
-	_lobby_status.text = "Opponent connected!  Starting..."
-	await get_tree().process_frame
-	_rpc_begin_pvp.rpc()
+	_lobby_status.text = "Opponent connected — waiting for their faction..."
 
 func _on_joined_server() -> void:
-	_lobby_status.text = "Connected — waiting for host..."
+	_lobby_status.text = "Connected — sending faction..."
+	_rpc_client_ready.rpc_id(1, player_faction)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_client_ready(faction: String) -> void:
+	player2_faction = faction
+	_lobby_status.text = "Starting game..."
+	await get_tree().process_frame
+	_rpc_begin_pvp.rpc(player_faction, player2_faction)
 
 func _on_connection_failed() -> void:
 	_lobby_status.text = "Connection failed."
@@ -884,27 +919,34 @@ func _close_lobby() -> void:
 # PvP game start
 # ════════════════════════════════════════════════════════════════════════════
 @rpc("authority", "call_local", "reliable")
-func _rpc_begin_pvp() -> void:
-	is_pvp = true
+func _rpc_begin_pvp(p1_fac: String, p2_fac: String) -> void:
+	is_pvp          = true
+	player1_faction = p1_fac
+	player2_faction = p2_fac
 	if multiplayer.get_unique_id() != 1:
 		local_owner    = "player2"
-		player_faction = "wildlings"
+		player_faction = p2_fac
 		camera_rig.position = ENEMY_START
+	else:
+		player_faction = p1_fac
 	_close_lobby()
 	_pvp_spawn_all()
 
 func _pvp_spawn_all() -> void:
 	_spawn_resource_nodes()
-	_pvp_spawn_building(PLAYER_START + Vector3(-4.0, 0.0, -4.0), "great_hall",     "player1")
-	_pvp_spawn_unit(PLAYER_START + Vector3( 3.0, 0.0,  0.0), "smallfolk",          "player1")
-	_pvp_spawn_unit(PLAYER_START + Vector3(-3.0, 0.0,  0.0), "smallfolk",          "player1")
-	_pvp_spawn_unit(PLAYER_START + Vector3( 0.0, 0.0,  3.0), "smallfolk",          "player1")
-	_pvp_spawn_unit(PLAYER_START + Vector3( 0.0, 0.0, -5.0), "levy_spearman",      "player1")
-	_pvp_spawn_building(ENEMY_START + Vector3(-4.0, 0.0, -4.0), "great_tent",      "player2")
-	_pvp_spawn_unit(ENEMY_START + Vector3( 3.0, 0.0,  0.0), "forager",             "player2")
-	_pvp_spawn_unit(ENEMY_START + Vector3(-3.0, 0.0,  0.0), "forager",             "player2")
-	_pvp_spawn_unit(ENEMY_START + Vector3( 0.0, 0.0,  3.0), "forager",             "player2")
-	_pvp_spawn_unit(ENEMY_START + Vector3( 0.0, 0.0, -5.0), "raider",              "player2")
+	_pvp_spawn_faction(PLAYER_START, player1_faction, "player1")
+	_pvp_spawn_faction(ENEMY_START,  player2_faction, "player2")
+
+func _pvp_spawn_faction(base: Vector3, faction_id: String, owner: String) -> void:
+	var fdata   : Dictionary = Data.FACTIONS.get(faction_id, {})
+	var bldg_id : String     = fdata.get("main_building", "great_hall")
+	var worker  : String     = fdata.get("worker",        "smallfolk")
+	var starter : String     = fdata.get("starter_unit",  "levy_spearman")
+	_pvp_spawn_building(base + Vector3(-4.0, 0.0, -4.0), bldg_id, owner)
+	_pvp_spawn_unit(base + Vector3( 3.0, 0.0,  0.0), worker,  owner)
+	_pvp_spawn_unit(base + Vector3(-3.0, 0.0,  0.0), worker,  owner)
+	_pvp_spawn_unit(base + Vector3( 0.0, 0.0,  3.0), worker,  owner)
+	_pvp_spawn_unit(base + Vector3( 0.0, 0.0, -5.0), starter, owner)
 
 func _pvp_spawn_building(pos: Vector3, bldg_id: String, owner: String) -> void:
 	_net_seq += 1
