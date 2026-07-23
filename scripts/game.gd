@@ -138,10 +138,17 @@ var _wave_timer  : float  = 90.0   # seconds until next enemy wave
 var _spawn_timer : float  = 45.0   # seconds until next enemy reinforcement
 
 # AI (solo mode)
-var ai_faction       : String   = "wildlings"
-var ai_gold          : int      = 150
-var ai_main_building : Building = null
-var _ai_attacking    : bool     = false
+var ai_faction        : String   = "wildlings"
+var ai_difficulty     : String   = "medium"
+var ai_gold           : int      = 150
+var ai_main_building  : Building = null
+var _ai_attacking     : bool     = false
+var _ai_build_step    : int      = 0
+var _ai_build_done    : bool     = false
+var _ai_gather_mult   : float    = 1.0
+var _ai_attack_thresh : int      = 5
+var _ai_wave_period   : float    = 90.0
+var _ai_debug         : bool     = true    # set false to silence console output
 
 # PvP networking
 var is_pvp          : bool                = false
@@ -839,7 +846,7 @@ func _on_gold_deposited(amount: int) -> void:
 	player_gold += amount
 
 func _on_ai_gold_deposited(amount: int) -> void:
-	ai_gold += amount
+	ai_gold += int(float(amount) * _ai_gather_mult)
 
 func _on_ai_production_complete(unit_id: String, spawn_pos: Vector3) -> void:
 	_spawn_enemy_unit(spawn_pos, unit_id)
@@ -878,9 +885,9 @@ func _show_lobby() -> void:
 	panel.anchor_right  = 0.5
 	panel.anchor_bottom = 0.5
 	panel.offset_left   = -200.0
-	panel.offset_top    = -220.0
+	panel.offset_top    = -270.0
 	panel.offset_right  = 200.0
-	panel.offset_bottom = 220.0
+	panel.offset_bottom = 270.0
 	_lobby_layer.add_child(panel)
 
 	var vbox := VBoxContainer.new()
@@ -903,6 +910,26 @@ func _show_lobby() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
 	vbox.add_child(sub)
+
+	var diff_lbl := Label.new()
+	diff_lbl.text = "AI Difficulty (vs AI):"
+	vbox.add_child(diff_lbl)
+
+	var diff_row := HBoxContainer.new()
+	diff_row.add_theme_constant_override("separation", 4)
+	vbox.add_child(diff_row)
+
+	var diff_group := ButtonGroup.new()
+	for diff : String in ["easy", "medium", "hard"]:
+		var db := Button.new()
+		db.text                  = diff.capitalize()
+		db.toggle_mode           = true
+		db.button_group          = diff_group
+		db.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if diff == ai_difficulty:
+			db.button_pressed = true
+		db.pressed.connect(_set_ai_difficulty.bind(diff))
+		diff_row.add_child(db)
 
 	var fac_lbl := Label.new()
 	fac_lbl.text = "Your Faction:"
@@ -963,6 +990,9 @@ func _show_lobby() -> void:
 func _set_lobby_faction(fid: String) -> void:
 	player_faction = fid
 
+func _set_ai_difficulty(diff: String) -> void:
+	ai_difficulty = diff
+
 func _host_game() -> void:
 	_enet = ENetMultiplayerPeer.new()
 	var err : int = _enet.create_server(7777, 2)
@@ -1008,6 +1038,7 @@ func _begin_solo() -> void:
 	var all_factions : Array[String] = ["north", "wildlings", "targaryen"]
 	all_factions.erase(player_faction)
 	ai_faction = all_factions[randi() % all_factions.size()]
+	_ai_init_difficulty()
 	_spawn_starting_buildings()
 	_spawn_resource_nodes()
 	_spawn_starting_units()
@@ -1017,6 +1048,30 @@ func _close_lobby() -> void:
 	if _lobby_layer != null:
 		_lobby_layer.queue_free()
 		_lobby_layer = null
+
+func _ai_init_difficulty() -> void:
+	match ai_difficulty:
+		"easy":
+			_ai_gather_mult   = 0.70
+			_ai_attack_thresh = 8
+			_ai_wave_period   = 120.0
+			_wave_timer       = 120.0
+			ai_gold           = 100
+		"medium":
+			_ai_gather_mult   = 1.00
+			_ai_attack_thresh = 5
+			_ai_wave_period   = 90.0
+			_wave_timer       = 90.0
+			ai_gold           = 150
+		"hard":
+			_ai_gather_mult   = 1.35
+			_ai_attack_thresh = 4
+			_ai_wave_period   = 60.0
+			_wave_timer       = 60.0
+			ai_gold           = 220
+	if _ai_debug:
+		print("[AI] Difficulty=%s  faction=%s  gather×%.2f  attack_thresh=%d  wave=%.0fs" \
+			% [ai_difficulty, ai_faction, _ai_gather_mult, _ai_attack_thresh, _ai_wave_period])
 
 # ════════════════════════════════════════════════════════════════════════════
 # PvP game start
@@ -1268,8 +1323,10 @@ func _process(delta: float) -> void:
 			_update_enemy_ai()
 		_wave_timer -= delta
 		if _wave_timer <= 0.0:
-			_wave_timer = 90.0
+			_wave_timer = _ai_wave_period
 			_launch_enemy_wave()
+			if _ai_debug:
+				print("[AI] Timed wave launched  (wave period %.0fs)" % _ai_wave_period)
 		_spawn_timer -= delta
 		if _spawn_timer <= 0.0:
 			_spawn_timer = 45.0
@@ -1547,9 +1604,15 @@ func _update_enemy_ai() -> void:
 			ai_workers.append(u)
 		else:
 			ai_military.append(u)
+
 	_ai_assign_workers(ai_workers)
-	_ai_do_production(ai_workers.size())
-	_ai_consider_expansion()
+
+	if not _ai_build_done:
+		_ai_execute_build_order(ai_workers, ai_military)
+	else:
+		_ai_do_production(ai_workers.size(), ai_military.size())
+		_ai_consider_expansion()
+
 	_ai_do_combat(ai_military)
 
 # Workers spread across nodes instead of all clustering on nearest
@@ -1585,7 +1648,71 @@ func _ai_assign_workers(workers: Array) -> void:
 			node_usage[best_rn] = int(node_usage.get(best_rn, 0)) + 1
 			w.gather_from(best_rn, dep)
 
-func _ai_do_production(worker_count: int) -> void:
+# ── Build order ──────────────────────────────────────────────────────────────
+# A scripted opening: worker → combat → worker → combat → combat, then steady
+func _ai_get_build_order() -> Array:
+	return [
+		{"slot": "worker"},
+		{"slot": "military"},
+		{"slot": "worker"},
+		{"slot": "military"},
+		{"slot": "military"},
+	]
+
+func _ai_pick_military_unit(trains: Array, military_count: int, worker_id: String) -> String:
+	var combat : Array = []
+	for t : String in trains:
+		if t != worker_id:
+			combat.append(t)
+	if combat.is_empty():
+		return ""
+	# Cycle through available unit types for composition variety
+	return combat[military_count % combat.size()]
+
+func _ai_execute_build_order(workers: Array, military: Array) -> void:
+	var steps : Array = _ai_get_build_order()
+	if _ai_build_step >= steps.size():
+		_ai_build_done = true
+		if _ai_debug:
+			print("[AI] Build order complete — entering steady state  workers=%d  military=%d  gold=%d" \
+				% [workers.size(), military.size(), ai_gold])
+		return
+
+	var step   : Dictionary = steps[_ai_build_step]
+	var slot   : String     = step.get("slot", "military")
+	var fdata  : Dictionary = Data.FACTIONS.get(ai_faction, {})
+	var worker : String     = fdata.get("worker", "")
+
+	for b_node in all_buildings:
+		var b : Building = b_node as Building
+		if b.owner_id != "player2":
+			continue
+		if not b.production_queue.is_empty():
+			continue
+		var bdata  : Dictionary = Data.BUILDINGS.get(b.building_id, {})
+		var trains : Array      = bdata.get("trains", [])
+		if trains.is_empty():
+			continue
+		var to_train : String = ""
+		if slot == "worker" and worker in trains:
+			to_train = worker
+		elif slot == "military":
+			to_train = _ai_pick_military_unit(trains, military.size(), worker)
+		if to_train.is_empty():
+			continue
+		var udata : Dictionary = Data.UNITS.get(to_train, {})
+		var cost  : int        = udata.get("gold_cost", 30)
+		if ai_gold >= cost:
+			if b.enqueue(to_train):
+				ai_gold -= cost
+				_ai_build_step += 1
+				if _ai_debug:
+					print("[AI] Build step %d → queued %s (gold left: %d)" \
+						% [_ai_build_step, to_train, ai_gold])
+				return  # one queue action per tick
+
+# ── Steady-state production ───────────────────────────────────────────────────
+func _ai_do_production(worker_count: int, military_count: int) -> void:
 	var fdata  : Dictionary = Data.FACTIONS.get(ai_faction, {})
 	var worker : String     = fdata.get("worker", "")
 	for b_node in all_buildings:
@@ -1598,16 +1725,12 @@ func _ai_do_production(worker_count: int) -> void:
 		var trains : Array      = bdata.get("trains", [])
 		if trains.is_empty():
 			continue
+		# Economy first: keep up to 6 workers; otherwise build military with composition
 		var to_train : String = ""
-		if worker in trains and worker_count < 5:
+		if worker in trains and worker_count < 6:
 			to_train = worker
 		else:
-			for t : String in trains:
-				if t != worker:
-					to_train = t
-					break
-			if to_train.is_empty() and not trains.is_empty():
-				to_train = trains[0]
+			to_train = _ai_pick_military_unit(trains, military_count, worker)
 		if to_train.is_empty():
 			continue
 		var udata : Dictionary = Data.UNITS.get(to_train, {})
@@ -1615,6 +1738,9 @@ func _ai_do_production(worker_count: int) -> void:
 		if ai_gold >= cost:
 			if b.enqueue(to_train):
 				ai_gold -= cost
+				if _ai_debug:
+					print("[AI] Steady → queued %s from %s  (workers=%d mil=%d gold=%d)" \
+						% [to_train, b.building_id, worker_count, military_count, ai_gold])
 
 # Build a second/third base at the nearest unclaimed resource location
 func _ai_consider_expansion() -> void:
@@ -1664,6 +1790,9 @@ func _ai_consider_expansion() -> void:
 		return
 	ai_gold -= cost
 	_spawn_ai_building(best_pos, bldg_id)
+	if _ai_debug:
+		print("[AI] Expansion! Built %s at (%.0f,%.0f)  (gold left: %d)" \
+			% [bldg_id, best_pos.x, best_pos.z, ai_gold])
 
 func _ai_do_combat(military: Array) -> void:
 	# Check if player is threatening any AI building
@@ -1692,9 +1821,12 @@ func _ai_do_combat(military: Array) -> void:
 		if target != null:
 			enemy.attack(target)
 	# Army-size triggered attack: don't wait for the wave timer
-	if not _ai_attacking and military.size() >= 5:
+	if not _ai_attacking and military.size() >= _ai_attack_thresh:
 		_ai_attacking = true
 		_launch_enemy_wave()
+		if _ai_debug:
+			print("[AI] Army-size attack! size=%d thresh=%d gold=%d" \
+				% [military.size(), _ai_attack_thresh, ai_gold])
 	elif military.size() < 2:
 		_ai_attacking = false
 

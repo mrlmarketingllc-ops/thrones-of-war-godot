@@ -1,7 +1,7 @@
 class_name ResourceNode
 extends StaticBody3D
 
-const TOTAL_GOLD : int = 400  # pool per node; per-trip amount comes from unit data
+const TOTAL_GOLD : int = 1500  # pool per node; per-trip amount comes from unit data
 
 var gold_remaining : int = TOTAL_GOLD
 
