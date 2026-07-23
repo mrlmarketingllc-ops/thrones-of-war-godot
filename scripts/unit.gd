@@ -53,7 +53,7 @@ signal died
 
 func _ready() -> void:
 	collision_layer = 2
-	collision_mask  = 1
+	collision_mask  = 17   # layer 1 (ground + hills) + layer 5 (river walls)
 
 	var udata : Dictionary = Data.UNITS.get(unit_id, {})
 	var is_worker_flag : bool = udata.get("is_worker", false)
@@ -154,8 +154,15 @@ func _build_visuals() -> void:
 # ── Physics ───────────────────────────────────────────────────────────────────
 
 func _physics_process(delta: float) -> void:
+	# Gravity — settles units onto terrain surface
+	if not is_on_floor():
+		velocity.y -= 20.0 * delta
+	elif velocity.y < 0.0:
+		velocity.y = 0.0
+
 	if state == UnitState.GATHERING:
-		velocity      = Vector3.ZERO
+		velocity.x   = 0.0
+		velocity.z   = 0.0
 		gather_timer -= delta
 		if gather_timer <= 0.0:
 			_complete_gather()
@@ -171,19 +178,23 @@ func _physics_process(delta: float) -> void:
 
 func _apply_movement(delta: float) -> void:
 	if not _has_target:
-		velocity = Vector3.ZERO
+		velocity.x = 0.0
+		velocity.z = 0.0
 		move_and_slide()
 		return
 	var to_target := _target_pos - global_position
 	to_target.y   = 0.0
 	if to_target.length() > 0.15:
-		velocity = to_target.normalized() * speed
+		var move := to_target.normalized() * speed
+		velocity.x = move.x
+		velocity.z = move.z
 		var look_pos := global_position + Vector3(to_target.x, 0.0, to_target.z).normalized()
 		look_at(look_pos, Vector3.UP)
 	else:
 		global_position.x = _target_pos.x
 		global_position.z = _target_pos.z
-		velocity    = Vector3.ZERO
+		velocity.x  = 0.0
+		velocity.z  = 0.0
 		_has_target = false
 	move_and_slide()
 
@@ -213,7 +224,8 @@ func _chase_target(delta: float) -> void:
 	if attack_target == null or not is_instance_valid(attack_target):
 		attack_target = null
 		state         = UnitState.IDLE
-		velocity      = Vector3.ZERO
+		velocity.x    = 0.0
+		velocity.z    = 0.0
 		move_and_slide()
 		return
 	var dist : float = global_position.distance_to(attack_target.global_position)
@@ -221,7 +233,8 @@ func _chase_target(delta: float) -> void:
 		state        = UnitState.ATTACKING
 		attack_timer = attack_interval
 		_has_target  = false
-		velocity     = Vector3.ZERO
+		velocity.x   = 0.0
+		velocity.z   = 0.0
 		move_and_slide()
 	else:
 		# Update target position each frame so we chase moving enemies
@@ -230,7 +243,8 @@ func _chase_target(delta: float) -> void:
 		_apply_movement(delta)
 
 func _do_attacking(delta: float) -> void:
-	velocity = Vector3.ZERO
+	velocity.x = 0.0
+	velocity.z = 0.0
 	if attack_target == null or not is_instance_valid(attack_target):
 		attack_target = null
 		state         = UnitState.IDLE

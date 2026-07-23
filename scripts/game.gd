@@ -224,6 +224,7 @@ func _setup_camera() -> void:
 # ════════════════════════════════════════════════════════════════════════════
 func _spawn_terrain_features() -> void:
 	_spawn_river()
+	_spawn_bridges()
 	_spawn_hills()
 	_spawn_rocks()
 	_spawn_trees()
@@ -258,8 +259,31 @@ func _spawn_river() -> void:
 		bank_vis.position = Vector3(MAP_SIZE * 0.5, 0.02, 38.0 + side * 4.8)
 		add_child(bank_vis)
 
+	# ── Impassable river walls (layer 5) with bridge gaps ─────────────────────
+	# Bridge 1 gap: x = 23..33  (centre x=28)
+	# Bridge 2 gap: x = 66..76  (centre x=71)
+	var wall_segs : Array = [
+		[10.5, 25.0],   # x = -2  → 23
+		[49.5, 33.0],   # x = 33  → 66
+		[90.0, 28.0],   # x = 76  → 104
+	]
+	for ws in wall_segs:
+		var wc    : float = ws[0]
+		var wlen  : float = ws[1]
+		var w_shape := BoxShape3D.new()
+		w_shape.size = Vector3(wlen, 4.0, 10.0)
+		var w_col := CollisionShape3D.new()
+		w_col.shape    = w_shape
+		w_col.position = Vector3(0.0, 2.0, 0.0)
+		var w_body := StaticBody3D.new()
+		w_body.collision_layer = 16   # layer 5 — impassable terrain
+		w_body.collision_mask  = 0
+		w_body.add_child(w_col)
+		w_body.position = Vector3(wc, 0.0, 38.0)
+		add_child(w_body)
+
 func _spawn_hills() -> void:
-	# Pre-placed conical hills (CylinderMesh tapered to a peak)
+	# Pre-placed conical hills with solid collision — units walk up/around them
 	# [center_x, center_z, base_radius, height]
 	var defs : Array = [
 		[25.0, 22.0, 9.0, 3.0],
@@ -272,24 +296,44 @@ func _spawn_hills() -> void:
 		[50.0, 88.0, 7.0, 2.5],
 	]
 	for raw in defs:
-		var cx    : float = raw[0]
-		var cz    : float = raw[1]
-		var brad  : float = raw[2]
-		var ht    : float = raw[3]
+		var cx   : float = raw[0]
+		var cz   : float = raw[1]
+		var brad : float = raw[2]
+		var ht   : float = raw[3]
+
+		# Visual cone
 		var mat := StandardMaterial3D.new()
 		mat.albedo_color = Color(0.19, 0.34, 0.13).darkened(randf() * 0.22)
 		mat.roughness    = 1.0
 		var cone := CylinderMesh.new()
-		cone.top_radius    = brad * 0.18   # narrow peak
+		cone.top_radius    = brad * 0.18
 		cone.bottom_radius = brad
 		cone.height        = ht
 		cone.material      = mat
 		var vis := MeshInstance3D.new()
 		vis.mesh     = cone
 		vis.position = Vector3(0.0, ht * 0.5 + 0.01, 0.0)
+
+		# Solid convex cone collision on layer 1 (ground) — units climb it
+		var pts := PackedVector3Array()
+		for j in 12:
+			var ang : float = float(j) / 12.0 * TAU
+			pts.append(Vector3(cos(ang) * brad,        0.01, sin(ang) * brad))
+			pts.append(Vector3(cos(ang) * brad * 0.18, ht,   sin(ang) * brad * 0.18))
+		pts.append(Vector3(0.0, ht + 0.05, 0.0))   # apex
+		var cone_shape := ConvexPolygonShape3D.new()
+		cone_shape.points = pts
+		var col := CollisionShape3D.new()
+		col.shape = cone_shape
+		var hill_body := StaticBody3D.new()
+		hill_body.collision_layer = 1
+		hill_body.collision_mask  = 0
+		hill_body.add_child(col)
+
 		var node := Node3D.new()
 		node.position = Vector3(cx, 0.0, cz)
 		node.add_child(vis)
+		node.add_child(hill_body)
 		add_child(node)
 
 func _spawn_rocks() -> void:
@@ -337,6 +381,55 @@ func _place_rock_cluster(center: Vector3) -> void:
 		)
 		cluster.add_child(rock)
 	add_child(cluster)
+
+func _spawn_bridges() -> void:
+	# Two stone bridges crossing the river — one left-centre, one right-centre
+	for bx in [28.0, 71.0]:
+		_place_bridge(bx)
+
+func _place_bridge(bx: float) -> void:
+	var node := Node3D.new()
+	node.position = Vector3(bx, 0.0, 38.0)
+
+	# Bridge deck — stone-coloured flat platform flush with ground
+	var deck_mat := StandardMaterial3D.new()
+	deck_mat.albedo_color = Color(0.52, 0.46, 0.38)
+	deck_mat.roughness    = 1.0
+	var deck := BoxMesh.new()
+	deck.size     = Vector3(10.0, 0.30, 8.0)
+	deck.material = deck_mat
+	var deck_vis := MeshInstance3D.new()
+	deck_vis.mesh     = deck
+	deck_vis.position = Vector3(0.0, 0.16, 0.0)   # bottom at y=0.01 (above ground, no z-fight)
+	node.add_child(deck_vis)
+
+	# Stone abutments (pillars) on east and west ends
+	for side in [-1.0, 1.0]:
+		var abt_mat := StandardMaterial3D.new()
+		abt_mat.albedo_color = Color(0.42, 0.36, 0.28)
+		abt_mat.roughness    = 1.0
+		var abt := BoxMesh.new()
+		abt.size     = Vector3(0.9, 1.2, 9.0)
+		abt.material = abt_mat
+		var abt_vis := MeshInstance3D.new()
+		abt_vis.mesh     = abt
+		abt_vis.position = Vector3(side * 5.3, 0.6, 0.0)
+		node.add_child(abt_vis)
+
+	# Low guard rails along each river-side edge
+	for side in [-1.0, 1.0]:
+		var rail_mat := StandardMaterial3D.new()
+		rail_mat.albedo_color = Color(0.38, 0.32, 0.26)
+		rail_mat.roughness    = 1.0
+		var rail := BoxMesh.new()
+		rail.size     = Vector3(10.0, 0.45, 0.20)
+		rail.material = rail_mat
+		var rail_vis := MeshInstance3D.new()
+		rail_vis.mesh     = rail
+		rail_vis.position = Vector3(0.0, 0.45, side * 4.1)
+		node.add_child(rail_vis)
+
+	add_child(node)
 
 func _spawn_trees() -> void:
 	var rng := RandomNumberGenerator.new()
@@ -602,16 +695,27 @@ func _spawn_enemy_unit(pos: Vector3, uid: String) -> void:
 	all_units.append(u)
 
 func _launch_enemy_wave() -> void:
-	# All enemy units march toward the player's main building
-	var target : Vector3 = PLAYER_START
-	if main_building != null and is_instance_valid(main_building):
-		target = main_building.global_position
-	target.x += randf_range(-6.0, 6.0)
-	target.z += randf_range(-6.0, 6.0)
+	# Route each enemy through the nearest bridge, then deep into player territory
+	var bridge_xs : Array[float] = [28.0, 71.0]
 	for u_node in all_units:
 		var u := u_node as Unit
-		if u.owner_id == "player2":
-			u.move_to(target)
+		if u.owner_id != "player2":
+			continue
+		# Pick the bridge whose X is closest to this unit
+		var best_bx  : float = bridge_xs[0]
+		var best_dx  : float = absf(u.global_position.x - bridge_xs[0])
+		for bx in bridge_xs:
+			var dx : float = absf(u.global_position.x - bx)
+			if dx < best_dx:
+				best_dx  = dx
+				best_bx  = bx
+		# Target: cross the bridge (narrow X) and push into player base
+		var target : Vector3 = Vector3(
+			best_bx + randf_range(-2.0, 2.0),
+			0.0,
+			PLAYER_START.z + randf_range(-8.0, 8.0)
+		)
+		u.move_to(target)
 
 func _try_spawn_enemy() -> void:
 	var count : int = 0
