@@ -149,7 +149,6 @@ func _ready() -> void:
 	_spawn_resource_nodes()
 	_spawn_starting_units()
 	_spawn_enemy_units()
-	_setup_navigation()
 
 # ════════════════════════════════════════════════════════════════════════════
 # Scene construction
@@ -763,22 +762,12 @@ func _setup_fog() -> void:
 	_fog_image.fill(Color(0.0, 0.0, 0.0, 1.0))
 	_fog_texture = ImageTexture.create_from_image(_fog_image)
 
-	# Shader with depth_test_disabled so fog draws over hills, trees, and all
-	# geometry regardless of their Y height — StandardMaterial3D would fail the
-	# depth test wherever hills or trees are taller than the fog plane.
+	# ShaderMaterial with blend_mix + depth_test_disabled so fog draws over
+	# hills and trees regardless of their height above the y=0.05 plane.
 	var shader := Shader.new()
-	shader.code = """
-shader_type spatial;
-render_mode unshaded, cull_disabled, depth_test_disabled, depth_draw_disabled;
-uniform sampler2D fog_tex : filter_nearest;
-void fragment() {
-    vec4 c = texture(fog_tex, UV);
-    ALBEDO = vec3(0.0);
-    ALPHA  = c.a;
-}
-"""
+	shader.code = "shader_type spatial; render_mode blend_mix, unshaded, cull_disabled, depth_test_disabled; uniform sampler2D fog_tex : filter_nearest; void fragment() { vec4 c = texture(fog_tex, UV); ALBEDO = vec3(0.0, 0.0, 0.0); ALPHA = c.a; }"
 	var mat := ShaderMaterial.new()
-	mat.shader         = shader
+	mat.shader          = shader
 	mat.render_priority = 2
 	mat.set_shader_parameter("fog_tex", _fog_texture)
 
@@ -1152,28 +1141,6 @@ func _update_enemy_ai() -> void:
 				best   = target
 		if best != null:
 			enemy.attack(best)
-
-# ════════════════════════════════════════════════════════════════════════════
-# Navigation — NavMesh baked once at startup; units use NavigationAgent3D
-# ════════════════════════════════════════════════════════════════════════════
-func _setup_navigation() -> void:
-	var nav_mesh := NavigationMesh.new()
-	nav_mesh.agent_height      = 1.8
-	nav_mesh.agent_radius      = 0.5
-	nav_mesh.agent_max_slope   = 35.0
-	nav_mesh.agent_max_climb   = 0.5
-	nav_mesh.cell_size         = 0.8
-	nav_mesh.cell_height       = 0.25
-	# Parse static colliders: layer 1 (ground + hills) + layer 5 (river walls = obstacles)
-	nav_mesh.geometry_parsed_geometry_type = NavigationMesh.PARSED_GEOMETRY_STATIC_COLLIDERS
-	nav_mesh.geometry_collision_mask       = 17
-	nav_mesh.geometry_source_geometry_mode = NavigationMesh.SOURCE_GEOMETRY_ROOT_NODE_CHILDREN
-
-	var nav_region := NavigationRegion3D.new()
-	nav_region.name            = "NavRegion"
-	nav_region.navigation_mesh = nav_mesh
-	add_child(nav_region)
-	nav_region.bake_navigation_mesh(false)   # synchronous — brief one-time pause on load
 
 # ════════════════════════════════════════════════════════════════════════════
 # Raycasting helpers
