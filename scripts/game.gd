@@ -50,7 +50,7 @@ class MinimapPanel extends Panel:
 
 		# Camera view indicator
 		if game_ref.camera_rig != null:
-			var cp := game_ref.camera_rig.global_position
+			var cp : Vector3 = game_ref.camera_rig.global_position
 			var tl := _w2m(cp + Vector3(-25.0, 0.0, -18.0))
 			var br := _w2m(cp + Vector3( 25.0, 0.0,  18.0))
 			draw_rect(Rect2(tl, br - tl), Color(1.0, 1.0, 1.0, 0.50), false, 1.0)
@@ -63,8 +63,12 @@ class MinimapPanel extends Panel:
 			if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
 				const SZ : float = 160.0
 				var ms   : float = game_ref.MAP_SIZE
-				game_ref.camera_rig.position.x = clampf(mb.position.x / SZ * ms, 0.0, ms)
-				game_ref.camera_rig.position.z = clampf(mb.position.y / SZ * ms, 0.0, ms)
+				var cur_y : float = game_ref.camera_rig.position.y
+				game_ref.camera_rig.position = Vector3(
+					clampf(mb.position.x / SZ * ms, 0.0, ms),
+					cur_y,
+					clampf(mb.position.y / SZ * ms, 0.0, ms)
+				)
 
 	func _w2m(world_pos: Vector3) -> Vector2:
 		const SZ : float = 160.0
