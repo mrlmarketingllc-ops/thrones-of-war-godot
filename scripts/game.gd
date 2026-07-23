@@ -763,12 +763,24 @@ func _setup_fog() -> void:
 	_fog_image.fill(Color(0.0, 0.0, 0.0, 1.0))
 	_fog_texture = ImageTexture.create_from_image(_fog_image)
 
-	var mat := StandardMaterial3D.new()
-	mat.transparency    = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.shading_mode    = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.texture_filter  = BaseMaterial3D.TEXTURE_FILTER_NEAREST   # PS1 blocky cells
-	mat.albedo_texture  = _fog_texture
-	mat.render_priority = 1
+	# Shader with depth_test_disabled so fog draws over hills, trees, and all
+	# geometry regardless of their Y height — StandardMaterial3D would fail the
+	# depth test wherever hills or trees are taller than the fog plane.
+	var shader := Shader.new()
+	shader.code = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_test_disabled, depth_draw_disabled;
+uniform sampler2D fog_tex : filter_nearest;
+void fragment() {
+    vec4 c = texture(fog_tex, UV);
+    ALBEDO = vec3(0.0);
+    ALPHA  = c.a;
+}
+"""
+	var mat := ShaderMaterial.new()
+	mat.shader         = shader
+	mat.render_priority = 2
+	mat.set_shader_parameter("fog_tex", _fog_texture)
 
 	var plane := PlaneMesh.new()
 	plane.size     = Vector2(MAP_SIZE, MAP_SIZE)

@@ -191,16 +191,22 @@ func _apply_movement(_delta: float) -> void:
 		move_and_slide()
 		return
 
-	# Nav-mesh path (move_to / gather / return).  Direct movement for chasing.
+	# Arrival check uses raw XZ distance — never depends on nav agent timing.
+	var xz_dist : float = Vector2(
+		_target_pos.x - global_position.x,
+		_target_pos.z - global_position.z
+	).length()
+	if _nav_enabled and xz_dist < 0.6:
+		velocity.x   = 0.0
+		velocity.z   = 0.0
+		_has_target  = false
+		_nav_enabled = false
+		move_and_slide()
+		return
+
+	# Direction: follow nav path when the agent has a live path; else direct.
 	var next_pos : Vector3 = _target_pos
-	if _nav_agent != null and _nav_enabled:
-		if _nav_agent.is_navigation_finished():
-			velocity.x   = 0.0
-			velocity.z   = 0.0
-			_has_target  = false
-			_nav_enabled = false
-			move_and_slide()
-			return
+	if _nav_agent != null and _nav_enabled and not _nav_agent.is_navigation_finished():
 		next_pos = _nav_agent.get_next_path_position()
 
 	var to_next := next_pos - global_position
@@ -216,8 +222,7 @@ func _apply_movement(_delta: float) -> void:
 		velocity.x = 0.0
 		velocity.z = 0.0
 		if not _nav_enabled:
-			# Direct movement (chase) — arrived when within 0.2 of target
-			_has_target = false
+			_has_target = false   # direct chase: clear when within 0.2 of target
 	move_and_slide()
 
 func _on_arrived() -> void:
