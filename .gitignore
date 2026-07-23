@@ -1,0 +1,13 @@
+# Godot 4 — auto-generated, don't commit
+.godot/
+*.translation
+
+# Exports
+exports/
+*.exe
+*.dmg
+*.app
+
+# OS junk
+.DS_Store
+Thumbs.db
