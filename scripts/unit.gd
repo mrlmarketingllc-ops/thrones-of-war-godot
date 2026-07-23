@@ -8,6 +8,7 @@ enum UnitState { IDLE, MOVING, GATHERING_WALK, GATHERING, RETURNING, ATTACK_MOVE
 # ── Identity — set unit_id and owner_id BEFORE adding to scene tree ──────────
 var unit_id  : String = "levy_spearman"
 var owner_id : String = "player1"
+var net_id   : int    = 0
 
 # Loaded from Data.UNITS[unit_id] in _ready()
 var unit_type       : UnitType = UnitType.SOLDIER

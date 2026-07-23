@@ -6,6 +6,7 @@ var building_id     : String = "great_hall"
 
 var supply_provided : int    = 0
 var owner_id        : String = ""
+var net_id          : int    = 0
 
 var production_queue : Array[String] = []
 var production_timer : float         = 0.0

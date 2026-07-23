@@ -43,9 +43,9 @@ class MinimapPanel extends Panel:
 		# Units (hide enemy dots when they're in fog)
 		for u_node in game_ref.all_units:
 			var u := u_node as Unit
-			if not u.visible and u.owner_id != "player1":
+			if not u.visible and u.owner_id != game_ref.local_owner:
 				continue
-			var col : Color = Color(0.25, 0.55, 1.0) if u.owner_id == "player1" else Color(1.0, 0.22, 0.22)
+			var col : Color = Color(0.25, 0.55, 1.0) if u.owner_id == game_ref.local_owner else Color(1.0, 0.22, 0.22)
 			draw_circle(_w2m(u.global_position), 2.5, col)
 
 		# Camera view indicator
@@ -137,6 +137,19 @@ var _ai_tick     : int    = 0
 var _wave_timer  : float  = 90.0   # seconds until next enemy wave
 var _spawn_timer : float  = 45.0   # seconds until next enemy reinforcement
 
+# PvP networking
+var is_pvp         : bool                = false
+var local_owner    : String              = "player1"
+var _enet          : ENetMultiplayerPeer = null
+var _net_seq       : int                 = 0
+var _p1_seq        : int                 = 100
+var _p2_seq        : int                 = 10000
+var _net_units     : Dictionary          = {}
+var _net_buildings : Dictionary          = {}
+var _lobby_layer   : CanvasLayer         = null
+var _lobby_status  : Label               = null
+var _lobby_ip      : LineEdit            = null
+
 # ════════════════════════════════════════════════════════════════════════════
 # Lifecycle
 # ════════════════════════════════════════════════════════════════════════════
@@ -145,10 +158,7 @@ func _ready() -> void:
 	_build_scene()
 	_setup_fog()
 	_setup_ui()
-	_spawn_starting_buildings()
-	_spawn_resource_nodes()
-	_spawn_starting_units()
-	_spawn_enemy_units()
+	_show_lobby()
 
 # ════════════════════════════════════════════════════════════════════════════
 # Scene construction
@@ -740,11 +750,249 @@ func _on_gold_deposited(amount: int) -> void:
 func _on_unit_died(unit: Unit) -> void:
 	all_units.erase(unit)
 	selected.erase(unit)
-	if unit.owner_id == "player1":
+	if unit.owner_id == local_owner:
 		player_supply -= unit.supply_cost
+	if is_pvp:
+		_net_units.erase(unit.net_id)
 
 func _on_production_complete(unit_id: String, spawn_pos: Vector3) -> void:
-	_spawn_unit(spawn_pos, unit_id)
+	if is_pvp:
+		var nid : int = _next_net_id()
+		_rpc_net_spawn.rpc(local_owner, unit_id, spawn_pos.x, spawn_pos.z, nid)
+	else:
+		_spawn_unit(spawn_pos, unit_id)
+
+# ════════════════════════════════════════════════════════════════════════════
+# Lobby
+# ════════════════════════════════════════════════════════════════════════════
+func _show_lobby() -> void:
+	_lobby_layer        = CanvasLayer.new()
+	_lobby_layer.layer  = 10
+	add_child(_lobby_layer)
+
+	var panel := Panel.new()
+	panel.anchor_left   = 0.5
+	panel.anchor_top    = 0.5
+	panel.anchor_right  = 0.5
+	panel.anchor_bottom = 0.5
+	panel.offset_left   = -200.0
+	panel.offset_top    = -190.0
+	panel.offset_right  = 200.0
+	panel.offset_bottom = 190.0
+	_lobby_layer.add_child(panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vbox.add_theme_constant_override("separation", 12)
+	panel.add_child(vbox)
+
+	var pad := Control.new()
+	pad.custom_minimum_size = Vector2(0.0, 8.0)
+	vbox.add_child(pad)
+
+	var title := Label.new()
+	title.text = "THRONES OF WAR"
+	title.add_theme_font_size_override("font_size", 26)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(title)
+
+	var sub := Label.new()
+	sub.text = "Choose game mode"
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+	vbox.add_child(sub)
+
+	_lobby_ip                     = LineEdit.new()
+	_lobby_ip.placeholder_text    = "Host IP for Join  (e.g. 192.168.1.5)"
+	_lobby_ip.text                = "127.0.0.1"
+	_lobby_ip.custom_minimum_size = Vector2(0.0, 36.0)
+	vbox.add_child(_lobby_ip)
+
+	var btn_host := Button.new()
+	btn_host.text                = "Host Game (LAN)"
+	btn_host.custom_minimum_size = Vector2(0.0, 40.0)
+	btn_host.pressed.connect(_host_game)
+	vbox.add_child(btn_host)
+
+	var btn_join := Button.new()
+	btn_join.text                = "Join Game"
+	btn_join.custom_minimum_size = Vector2(0.0, 40.0)
+	btn_join.pressed.connect(_join_game)
+	vbox.add_child(btn_join)
+
+	vbox.add_child(HSeparator.new())
+
+	var btn_solo := Button.new()
+	btn_solo.text                = "Play vs AI"
+	btn_solo.custom_minimum_size = Vector2(0.0, 40.0)
+	btn_solo.pressed.connect(_begin_solo)
+	vbox.add_child(btn_solo)
+
+	_lobby_status                      = Label.new()
+	_lobby_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lobby_status.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	vbox.add_child(_lobby_status)
+
+func _host_game() -> void:
+	_enet = ENetMultiplayerPeer.new()
+	var err : int = _enet.create_server(7777, 2)
+	if err != OK:
+		_lobby_status.text = "Failed to open port 7777"
+		return
+	multiplayer.multiplayer_peer = _enet
+	multiplayer.peer_connected.connect(_on_peer_connected)
+	_lobby_status.text = "Waiting for opponent on port 7777..."
+
+func _join_game() -> void:
+	var ip : String = _lobby_ip.text.strip_edges()
+	_enet = ENetMultiplayerPeer.new()
+	var err : int = _enet.create_client(ip, 7777)
+	if err != OK:
+		_lobby_status.text = "Failed to connect to " + ip
+		return
+	multiplayer.multiplayer_peer = _enet
+	multiplayer.connected_to_server.connect(_on_joined_server)
+	multiplayer.connection_failed.connect(_on_connection_failed)
+	local_owner    = "player2"
+	player_faction = "wildlings"
+	_lobby_status.text = "Connecting to " + ip + "..."
+
+func _on_peer_connected(_id: int) -> void:
+	_lobby_status.text = "Opponent connected!  Starting..."
+	await get_tree().process_frame
+	_rpc_begin_pvp.rpc()
+
+func _on_joined_server() -> void:
+	_lobby_status.text = "Connected — waiting for host..."
+
+func _on_connection_failed() -> void:
+	_lobby_status.text = "Connection failed."
+
+func _begin_solo() -> void:
+	_close_lobby()
+	_spawn_starting_buildings()
+	_spawn_resource_nodes()
+	_spawn_starting_units()
+	_spawn_enemy_units()
+
+func _close_lobby() -> void:
+	if _lobby_layer != null:
+		_lobby_layer.queue_free()
+		_lobby_layer = null
+
+# ════════════════════════════════════════════════════════════════════════════
+# PvP game start
+# ════════════════════════════════════════════════════════════════════════════
+@rpc("authority", "call_local", "reliable")
+func _rpc_begin_pvp() -> void:
+	is_pvp = true
+	if multiplayer.get_unique_id() != 1:
+		local_owner    = "player2"
+		player_faction = "wildlings"
+		camera_rig.position = ENEMY_START
+	_close_lobby()
+	_pvp_spawn_all()
+
+func _pvp_spawn_all() -> void:
+	_spawn_resource_nodes()
+	_pvp_spawn_building(PLAYER_START + Vector3(-4.0, 0.0, -4.0), "great_hall",     "player1")
+	_pvp_spawn_unit(PLAYER_START + Vector3( 3.0, 0.0,  0.0), "smallfolk",          "player1")
+	_pvp_spawn_unit(PLAYER_START + Vector3(-3.0, 0.0,  0.0), "smallfolk",          "player1")
+	_pvp_spawn_unit(PLAYER_START + Vector3( 0.0, 0.0,  3.0), "smallfolk",          "player1")
+	_pvp_spawn_unit(PLAYER_START + Vector3( 0.0, 0.0, -5.0), "levy_spearman",      "player1")
+	_pvp_spawn_building(ENEMY_START + Vector3(-4.0, 0.0, -4.0), "great_tent",      "player2")
+	_pvp_spawn_unit(ENEMY_START + Vector3( 3.0, 0.0,  0.0), "forager",             "player2")
+	_pvp_spawn_unit(ENEMY_START + Vector3(-3.0, 0.0,  0.0), "forager",             "player2")
+	_pvp_spawn_unit(ENEMY_START + Vector3( 0.0, 0.0,  3.0), "forager",             "player2")
+	_pvp_spawn_unit(ENEMY_START + Vector3( 0.0, 0.0, -5.0), "raider",              "player2")
+
+func _pvp_spawn_building(pos: Vector3, bldg_id: String, owner: String) -> void:
+	_net_seq += 1
+	var b = BuildingScene.instantiate()
+	b.building_id = bldg_id
+	b.owner_id    = owner
+	b.net_id      = _net_seq
+	b.position    = pos
+	if owner == local_owner:
+		b.production_complete.connect(_on_production_complete)
+	add_child(b)
+	all_buildings.append(b)
+	_net_buildings[_net_seq] = b
+	if owner == local_owner:
+		main_building      = b
+		player_max_supply += (b as Building).supply_provided
+
+func _pvp_spawn_unit(pos: Vector3, uid: String, owner: String) -> void:
+	_net_seq += 1
+	var u = UnitScene.instantiate()
+	u.unit_id  = uid
+	u.owner_id = owner
+	u.net_id   = _net_seq
+	u.position = pos
+	if owner == local_owner:
+		u.deposited_gold.connect(_on_gold_deposited)
+	u.died.connect(_on_unit_died.bind(u))
+	add_child(u)
+	all_units.append(u)
+	_net_units[_net_seq] = u
+	if owner == local_owner:
+		player_supply += u.supply_cost
+
+func _next_net_id() -> int:
+	if local_owner == "player1":
+		_p1_seq += 1
+		return _p1_seq
+	else:
+		_p2_seq += 1
+		return _p2_seq
+
+# ════════════════════════════════════════════════════════════════════════════
+# RPC commands
+# ════════════════════════════════════════════════════════════════════════════
+@rpc("any_peer", "call_local", "reliable")
+func _rpc_cmd_move(nid: int, tx: float, tz: float) -> void:
+	var u : Unit = _net_units.get(nid) as Unit
+	if u == null or not is_instance_valid(u):
+		return
+	u.move_to(Vector3(tx, 0.0, tz))
+
+@rpc("any_peer", "call_local", "reliable")
+func _rpc_cmd_attack(attacker_nid: int, target_nid: int) -> void:
+	var attacker : Unit = _net_units.get(attacker_nid) as Unit
+	var target   : Unit = _net_units.get(target_nid)   as Unit
+	if attacker == null or not is_instance_valid(attacker):
+		return
+	if target == null or not is_instance_valid(target):
+		return
+	attacker.attack(target)
+
+@rpc("any_peer", "call_local", "reliable")
+func _rpc_cmd_gather(worker_nid: int, rn_idx: int, deposit_nid: int) -> void:
+	var worker  : Unit     = _net_units.get(worker_nid)      as Unit
+	var deposit : Building = _net_buildings.get(deposit_nid) as Building
+	if worker == null or not is_instance_valid(worker):
+		return
+	if deposit == null or not is_instance_valid(deposit):
+		return
+	if rn_idx < 0 or rn_idx >= resource_nodes.size():
+		return
+	worker.gather_from(resource_nodes[rn_idx] as ResourceNode, deposit)
+
+@rpc("any_peer", "call_local", "reliable")
+func _rpc_net_spawn(owner: String, uid: String, px: float, pz: float, nid: int) -> void:
+	var u = UnitScene.instantiate()
+	u.unit_id  = uid
+	u.owner_id = owner
+	u.net_id   = nid
+	u.position = Vector3(px, 0.0, pz)
+	if owner == local_owner:
+		u.deposited_gold.connect(_on_gold_deposited)
+	u.died.connect(_on_unit_died.bind(u))
+	add_child(u)
+	all_units.append(u)
+	_net_units[nid] = u
+	if owner == local_owner:
+		player_supply += u.supply_cost
 
 # ════════════════════════════════════════════════════════════════════════════
 # Fog of war
@@ -786,7 +1034,7 @@ func _update_fog() -> void:
 	var unit_xz : Array[Vector2] = []
 	for u_node in all_units:
 		var u := u_node as Unit
-		if u.owner_id == "player1":
+		if u.owner_id == local_owner:
 			unit_xz.append(Vector2(u.global_position.x, u.global_position.z))
 
 	var vis_r_sq  : float = VISION_R * VISION_R
@@ -830,7 +1078,7 @@ func _update_fog() -> void:
 	# Hide enemy units that are outside any player unit's vision
 	for u_node in all_units:
 		var u := u_node as Unit
-		if u.owner_id == "player1":
+		if u.owner_id == local_owner:
 			continue
 		u.visible = _is_world_pos_visible(u.global_position)
 
@@ -869,18 +1117,19 @@ func _process(delta: float) -> void:
 	if _fog_tick >= 8:
 		_fog_tick = 0
 		_update_fog()
-	_ai_tick += 1
-	if _ai_tick >= 30:
-		_ai_tick = 0
-		_update_enemy_ai()
-	_wave_timer -= delta
-	if _wave_timer <= 0.0:
-		_wave_timer = 90.0
-		_launch_enemy_wave()
-	_spawn_timer -= delta
-	if _spawn_timer <= 0.0:
-		_spawn_timer = 45.0
-		_try_spawn_enemy()
+	if not is_pvp:
+		_ai_tick += 1
+		if _ai_tick >= 30:
+			_ai_tick = 0
+			_update_enemy_ai()
+		_wave_timer -= delta
+		if _wave_timer <= 0.0:
+			_wave_timer = 90.0
+			_launch_enemy_wave()
+		_spawn_timer -= delta
+		if _spawn_timer <= 0.0:
+			_spawn_timer = 45.0
+			_try_spawn_enemy()
 	_update_hud()
 
 func _pan_camera(delta: float) -> void:
@@ -989,12 +1238,12 @@ func _unhandled_input(event: InputEvent) -> void:
 func _pick_at(screen_pos: Vector2) -> void:
 	_deselect_all()
 	var hit = _raycast_layer(screen_pos, 2)
-	if hit is Unit and (hit as Unit).owner_id == "player1":
+	if hit is Unit and (hit as Unit).owner_id == local_owner:
 		(hit as Unit).select(true)
 		selected.append(hit)
 		return
 	hit = _raycast_layer(screen_pos, 3)
-	if hit is Building:
+	if hit is Building and (hit as Building).owner_id == local_owner:
 		selected.append(hit)
 
 func _finish_box_select(end_pos: Vector2) -> void:
@@ -1005,7 +1254,7 @@ func _finish_box_select(end_pos: Vector2) -> void:
 	)
 	for u in all_units:
 		var unit := u as Unit
-		if unit.owner_id != "player1":
+		if unit.owner_id != local_owner:
 			continue
 		var screen := camera.unproject_position(unit.global_position + Vector3(0.0, 0.65, 0.0))
 		if rect.has_point(screen):
@@ -1033,22 +1282,29 @@ func _right_click(screen_pos: Vector2) -> void:
 
 	# Priority 1 — right-click on enemy unit → attack
 	var hit_unit = _raycast_layer(screen_pos, 2)
-	if hit_unit is Unit and (hit_unit as Unit).owner_id != "player1":
+	if hit_unit is Unit and (hit_unit as Unit).owner_id != local_owner:
 		var sel_units := _get_selected_units()
 		if not sel_units.is_empty():
 			for u in sel_units:
-				(u as Unit).attack(hit_unit as Unit)
+				if is_pvp:
+					_rpc_cmd_attack.rpc((u as Unit).net_id, (hit_unit as Unit).net_id)
+				else:
+					(u as Unit).attack(hit_unit as Unit)
 			return
 
 	# Priority 2 — right-click on resource node with workers selected → gather
 	var rn = _raycast_layer(screen_pos, 4)
-	if rn is ResourceNode and not rn.is_depleted():
+	if rn is ResourceNode and not (rn as ResourceNode).is_depleted():
 		var workers := _get_selected_units().filter(
 			func(e): return (e as Unit).unit_type == Unit.UnitType.WORKER
 		)
 		if not workers.is_empty() and main_building != null:
 			for w in workers:
-				(w as Unit).gather_from(rn as ResourceNode, main_building)
+				if is_pvp:
+					var rn_idx : int = resource_nodes.find(rn)
+					_rpc_cmd_gather.rpc((w as Unit).net_id, rn_idx, main_building.net_id)
+				else:
+					(w as Unit).gather_from(rn as ResourceNode, main_building)
 			return
 
 	# Priority 3 — right-click on ground → move
@@ -1058,7 +1314,12 @@ func _right_click(screen_pos: Vector2) -> void:
 	var units := _get_selected_units()
 	var count := units.size()
 	for i in count:
-		(units[i] as Unit).move_to(world_pos + _formation_offset(i, count))
+		var offset : Vector3 = _formation_offset(i, count)
+		var target : Vector3 = world_pos + offset
+		if is_pvp:
+			_rpc_cmd_move.rpc((units[i] as Unit).net_id, target.x, target.z)
+		else:
+			(units[i] as Unit).move_to(target)
 
 func _try_train_by_slot(slot: int) -> void:
 	for b_node in _get_selected_buildings():
@@ -1100,6 +1361,8 @@ func _get_buildable_buildings() -> Array:
 	return result
 
 func _place_building(world_pos: Vector3, bldg_id: String) -> void:
+	if is_pvp:
+		return
 	var bdata : Dictionary = Data.BUILDINGS.get(bldg_id, {})
 	var cost  : int        = bdata.get("gold_cost", 0)
 	if player_gold < cost:
